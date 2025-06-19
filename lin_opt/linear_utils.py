@@ -69,7 +69,6 @@ def optimize(c, A_ub, b_ub, A_eq, b_eq, l, u):
     c = c.cpu().numpy()
     A_ub, b_ub = A_ub.cpu().numpy(), b_ub.cpu().numpy()
     A_eq, b_eq = A_eq.cpu().numpy(), b_eq.cpu().numpy()
-
     
     from scipy.optimize import linprog
 

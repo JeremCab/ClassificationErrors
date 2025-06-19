@@ -1,7 +1,7 @@
 import torch
 import tqdm
 
-from dataset import create_dataset
+from propagate_intervals.dataset_old import create_dataset
 from network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
 
 BATCH_SIZE = 256

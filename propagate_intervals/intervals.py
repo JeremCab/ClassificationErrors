@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn.functional import relu as R 
 
 from network import SmallDenseNet, SmallConvNet
-from dataset import create_dataset
+from propagate_intervals.dataset_old import create_dataset
 from torch_conv_layer_to_fully_connected import torch_conv_layer_to_affine
 
 RANDOM_DATO = None
@@ -103,7 +103,7 @@ def get_layer(net, layer):
     if type(layer_pointer) == nn.MaxPool2d:
         return "pool", None, None, input_size, layer_pointer
 
-    raise ValueError(f"{layer} is wierd")
+    raise ValueError(f"{layer} is weird")
 
 
 def delta(x):

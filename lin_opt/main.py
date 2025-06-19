@@ -1,12 +1,18 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import click
 import numpy as np
 import torch
 
 from preprocessing import create_comparing_network, eval_one_sample
-from network import load_network, SmallConvNet, SmallDenseNet
-from dataset import create_dataset
+from utils.network import load_network, SmallConvNet, SmallDenseNet
+from utils.dataset import create_dataset
 from linear_utils import create_c, create_upper_bounds, optimize
 from linear_utils import TOL, TOL2
+
 
 def check_upper_bounds(A, b, input1, input2):
 
@@ -37,7 +43,6 @@ def check_upper_bounds(A, b, input1, input2):
     print(result[wrong_indexes])
 
     
-    
 
 def check_saturations(net, input1, input2):
     
@@ -52,13 +57,16 @@ def check_saturations(net, input1, input2):
     print("Check saturations", torch.all(saturation1 == saturation2).item())
     assert torch.all(saturation1 == saturation2)
 
+
 @click.command()
 @click.argument("start", type=int)
 @click.argument("end", type=int)
 @click.option("-b", "--bits", default=16)
 @click.option("--outputdir", default="results")
+
 def main(start, end, bits, outputdir): 
     
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE=1    
     NETWORK="mnist_dense_net.pt"
     MODEL = SmallDenseNet 
@@ -66,11 +74,11 @@ def main(start, end, bits, outputdir):
     INPUT_SIZE = (1, 28, 28) 
     N = 1 * 28 * 28 
 
-    net = load_network(MODEL, NETWORK)
-    net2 = load_network(MODEL, NETWORK)
+    net = load_network(MODEL, NETWORK, device=DEVICE)
+    net2 = load_network(MODEL, NETWORK, device=DEVICE)
     compnet = create_comparing_network(net, net2, bits=bits)
     
-    print(compnet)
+    print("*** Networks N and Ñ side by side\n\n", compnet)
 
     data = create_dataset(train=False, batch_size=BATCH_SIZE)
 
@@ -78,7 +86,7 @@ def main(start, end, bits, outputdir):
     for i, (inputs, labels) in enumerate(data):
         if i < start or i >= end:
             continue
-        inputs = inputs.cuda().double()
+        inputs = inputs.to(DEVICE).double()
 
         out1 = net(inputs)
         out2 = net2(inputs)
@@ -104,15 +112,18 @@ def main(start, end, bits, outputdir):
         l = -0.5
         u = 3.0
 
-        err, x = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u) 
-        print("result:", -err)
+        # err, x = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u) 
+        # print("result:", -err)
+        res = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u) # XXX MY FIX
+        err = res.fun # XXX MY FIX
+        x = res.x     # XXX MY FIX
 
         assert np.isclose(x[0], 1.0)
 
-        y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).cuda()
+        y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).to(DEVICE)
         err_by_net = compnet(y).item()
         
-        err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).cuda()).item()
+        err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item()
 
         try: 
             assert np.isclose(-err, err_by_net)
@@ -122,9 +133,9 @@ def main(start, end, bits, outputdir):
             check_saturations(net, inputs, x[1:])
         except AssertionError:
             print(" *** Optimisation FAILED. *** ")
-            continue
+            # pass
         
-        with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
+        with open(f"{outputdir}/results_{start}_{end}.csv", "w") as f: # XXX MY FIX "a" -> "w"
             print(f"{real_error:.6f},{computed_error:.6f},{-err:.6f}", file=f)
         #np.save(f"{RESULT_PATH}/{i}.npy", np.array(x[1:], dtype=np.float64))
         #np.save(f"{RESULT_PATH}/{i}_orig.npy", inputs.cpu().numpy())

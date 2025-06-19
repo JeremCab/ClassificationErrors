@@ -1,3 +1,8 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import click
 import numpy as np
 import torch
@@ -5,10 +10,11 @@ import torch
 from preprocessing import create_comparing_network, eval_one_sample
 from preprocessing import create_comparing_network_classifier
 
-from network import load_network, SmallConvNet, SmallDenseNet
-from dataset import create_dataset
+from utils.network import load_network, SmallConvNet, SmallDenseNet
+from utils.dataset import create_dataset
 from linear_utils import create_c, create_upper_bounds, optimize
 from linear_utils import TOL, TOL2
+
 
 def check_upper_bounds(A, b, input1, input2):
 
@@ -44,11 +50,12 @@ def check_upper_bounds(A, b, input1, input2):
         #   print(result[wrong_indexes])
 
     
-    
 
 def check_saturations(net, input1, input2):
     
-    input2 = torch.tensor(input2).reshape(1, 1, 28, 28).cuda()
+    device = next(net.parameters()).device
+    
+    input2 = torch.tensor(input2).reshape(1, 1, 28, 28).to(device)
 
     saturation1 = eval_one_sample(net, input1)
     saturation2 = eval_one_sample(net, input2)
@@ -64,8 +71,10 @@ def check_saturations(net, input1, input2):
 @click.argument("end", type=int)
 @click.option("-b", "--bits", default=16)
 @click.option("--outputdir", default="results")
+
 def main(start, end, bits, outputdir): 
     
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE=1    
     NETWORK="mnist_dense_net.pt"
     MODEL = SmallDenseNet 
@@ -73,8 +82,8 @@ def main(start, end, bits, outputdir):
     INPUT_SIZE = (1, 28, 28) 
     N = 1 * 28 * 28 
 
-    net = load_network(MODEL, NETWORK)
-    net2 = load_network(MODEL, NETWORK)
+    net = load_network(MODEL, NETWORK, device=DEVICE)
+    net2 = load_network(MODEL, NETWORK, device=DEVICE)
     compnet = create_comparing_network(net, net2, bits=bits, skip_magic=True)
     
     print(compnet)
@@ -89,7 +98,7 @@ def main(start, end, bits, outputdir):
         if i < start or i >= end:
             continue
 
-        inputs = inputs.cuda().double()
+        inputs = inputs.to(DEVICE).double()
 
         outputs = net(inputs)
         _, preds = outputs.max(1)
@@ -99,7 +108,7 @@ def main(start, end, bits, outputdir):
             continue
 
 
-        for other in range(10): # todo FIX number 10 to number classes
+        for other in range(10): # TODO FIX number 10 to number classes
             if other == label:
                 continue
             print(f"other {other}", flush=True)
@@ -120,7 +129,6 @@ def main(start, end, bits, outputdir):
             # comparing_network_classifier computes net2(other) - net(label)
             # it shold be maximised to get wrong prediction
             compnet_classifier = create_comparing_network_classifier(compnet, label, other)
-
             
             """
             # second check
@@ -139,7 +147,7 @@ def main(start, end, bits, outputdir):
             # compnet classifier is destroyed after this step, why?
 
             """check
-            x_input = torch.tensor([1.0, *inputs.flatten()], dtype=torch.float64).cuda()
+            x_input = torch.tensor([1.0, *inputs.flatten()], dtype=torch.float64).to(device)
             
             print(c @ x_input)
             """
@@ -190,10 +198,10 @@ def main(start, end, bits, outputdir):
 
                 assert np.isclose(x[0], 1.0)
             
-                y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).cuda()
+                y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).to(DEVICE)
                 err_by_net = compnet_classifier(y).item()
                 
-                err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).cuda()).item()
+                err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item()
                 
                 try: 
                     check_upper_bounds(A_ub, b_ub, None, x[1:])
@@ -216,8 +224,6 @@ def main(start, end, bits, outputdir):
             else:
                 print("Solution not found.")
                 maximas.append(None)
-                
-            
         
         with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
             values = [val for val in maximas if val is not None]
@@ -229,7 +235,7 @@ def main(start, end, bits, outputdir):
         
 if __name__ == "__main__":
 
-    # test_squeeze() # 1.
+    #test_squeeze() # 1.
     #test_compnet() # 2.
     #test_squeezed_compnet() # 3.
 

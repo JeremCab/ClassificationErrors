@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 import sys
 
-from network import SmallDenseNet, SmallConvNet
-from dataset import create_dataset
+from lin_opt.network_old import SmallDenseNet, SmallConvNet
+from lin_opt.dataset_old import create_dataset
 from quant_utils import Quantization
 
 TOL = 1e-8

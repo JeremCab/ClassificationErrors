@@ -26,8 +26,10 @@ def eval_one_sample(net, sample):
 
 def prune_network(net, saturations):
     """Creates a new network that is equivalent with the given net on the assumption that saturations
-    are fixed.  Unused neurons are deleted.
+    are fixed. Unused neurons are deleted.
     """
+
+    device = next(net.parameters()).device
 
     layers = []
     assert isinstance(net, nn.Sequential)
@@ -78,16 +80,19 @@ def prune_network(net, saturations):
         layers[i] = new_post_layer
     
     # create a fixed network
-    net = nn.Sequential(*layers).cuda().eval()
+    net = nn.Sequential(*layers).to(device).eval()
     
     print(net)
     return net
 
 def squeeze_network(net):
     """ Assumes the net is already pruned for some particular saturation.
-    Creates an equivalent network that has only one layer. (Squeeze the linear layres into one).
+    Creates an equivalent network that has only one layer. (Squeeze the linear layers into one).
+    This means computing the "shortcut weights" associated with the fixed saturation.
     """
 
+    device = next(net.parameters()).device
+    
     layers = []
     assert isinstance(net, nn.Sequential)
     for layer in net:
@@ -103,14 +108,12 @@ def squeeze_network(net):
     for l in layers[1:]:
         assert isinstance(l, nn.Linear)
     
-
     # take only linear layers 
     lin_layers = [l for l in layers if isinstance(l, nn.Linear)] 
 
-    W = [l.weight.data for l in lin_layers[::-1]]
-    b = [l.bias.data for l in lin_layers[::-1]]
+    W = [l.weight.data for l in lin_layers[::-1]] # weights of reversed list of layers
+    b = [l.bias.data for l in lin_layers[::-1]]   # biases of reversed list of layers
 
-    
     W_new = torch.linalg.multi_dot(W)
     bias_new = b[0]
     for i, bias in enumerate(b[1:]):
@@ -130,7 +133,7 @@ def squeeze_network(net):
     if isinstance(layers[0], nn.Flatten):
         new_layers = [layers[0]] + new_layers
 
-    return nn.Sequential(*new_layers).cuda().eval()
+    return nn.Sequential(*new_layers).to(device).eval()
     
 
         
@@ -139,15 +142,15 @@ def stack_linear_layers(layer1, layer2, common_input=False):
     """ Stack two linear layers horizontally side by side. If common_input is True they share the same 
     input vector, otherwise the two inputs are processed separately.
     """
-
+    device = next(layer1.parameters()).device
 
     if common_input:
         wide_W1 =  layer1.weight.data
         wide_W2 =  layer2.weight.data 
     else:
         wide_W1 = torch.hstack([layer1.weight.data,
-                                torch.zeros(*layer1.weight.data.shape).double().cuda()])
-        wide_W2 = torch.hstack([torch.zeros(*layer2.weight.data.shape).double().cuda(),
+                                torch.zeros(*layer1.weight.data.shape).double().to(device)])
+        wide_W2 = torch.hstack([torch.zeros(*layer2.weight.data.shape).double().to(device),
                                 layer2.weight.data])
                             
     new_weight = torch.vstack([wide_W1, wide_W2])
@@ -195,6 +198,9 @@ def create_comparing_network(net, net2, bits=16, skip_magic=False):
     second network is rounded for the given number of bits.
 
     """
+
+    device = next(net.parameters()).device
+
     twin = lower_precision(net2, bits=bits) 
 
     layer_list = []
@@ -242,7 +248,7 @@ def create_comparing_network(net, net2, bits=16, skip_magic=False):
   
         layer_list.append(output_layer)
     
-    return nn.Sequential(*layer_list).cuda()
+    return nn.Sequential(*layer_list).to(device)
 
 def get_subnetwork(net, i):
     """ Returns network up to i-th linear layer includisively."""
@@ -259,6 +265,8 @@ def get_subnetwork(net, i):
 
 def create_comparing_network_classifier(net, label, other, in_orig=False):
 
+    device = next(net.parameters()).device
+
     out = net[-1].out_features
     assert out == 2 * NUMCLASSES 
 
@@ -267,7 +275,7 @@ def create_comparing_network_classifier(net, label, other, in_orig=False):
     else:
         n = 0 
     
-    output_layer = nn.Linear(out, 1).double() # TODO fix  the number
+    output_layer = nn.Linear(out, 1).double() # TODO fix the number
     output_layer.weight.data = torch.zeros(1, out).double()
     output_layer.bias.data = torch.zeros(1).double()
     output_layer.weight.data[0, n + label] = -1.0
@@ -276,6 +284,6 @@ def create_comparing_network_classifier(net, label, other, in_orig=False):
     old_layers = [layer for layer in net]
     old_layers.append(output_layer)
 
-    return nn.Sequential(*old_layers).cuda()
+    return nn.Sequential(*old_layers).to(device)
 
 
