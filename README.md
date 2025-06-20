@@ -2,6 +2,11 @@
 
 Computing the classification errors between unquantized and quantized neural networks.
 
+The experiment pipeline consists of the two following steps:
+
+1. `train_network.sh` – for training the baseline model.
+2. `run_experiment.sh` – for computing the errors between unquantized and quantized neural networks using linear and non-linear programming techniques.
+
 ---
 
 ## `train_network.sh`
