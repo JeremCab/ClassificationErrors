@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-EPOCHS=2
+EPOCHS=10
 BATCH_SIZE=512
 CHECKPOINT_DIR="checkpoints"
 MODEL_NAME="mnist_dense_net"
@@ -18,11 +18,9 @@ echo "Training network with the following parameters:"
 echo "  Epochs:           $EPOCHS"
 echo "  Batch size:       $BATCH_SIZE"
 echo "  Checkpoint dir:   $CHECKPOINT_DIR"
-# echo "  Checkpoint path:  $CHECKPOINT_PATH"
 echo
 
 # Run training
 python propagate_intervals/train.py \
   --batch_size $BATCH_SIZE \
   --num_epochs $EPOCHS \
-  # --checkpoint_path $CHECKPOINT_PATH
