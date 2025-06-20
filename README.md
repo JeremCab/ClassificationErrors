@@ -1,16 +1,20 @@
-# 🧠 `train_network.sh`
+# Classification Errors
+
+Computing the classification errors between unquantized and quantized neural networks.
+
+---
+
+## `train_network.sh`
 
 This script analyzes classification errors between an original neural network and its quantized counterpart using a direct evaluation strategy.
 
----
 
-## 🎯 Purpose
+### 🎯 Purpose
 
 To compute and compare real versus predicted classification errors by directly evaluating the original and quantized networks side-by-side.
 
----
 
-## ⚙️ Configuration Parameters
+### ⚙️ Configuration Parameters
 
 | Variable      | Description                                                         |
 |---------------|---------------------------------------------------------------------|
@@ -20,9 +24,8 @@ To compute and compare real versus predicted classification errors by directly e
 | `OUTPUT_DIR`  | Output directory for storing results                                |
 | `MODEL_NAME`  | Name of the model used for evaluation                               |
 
----
 
-## 🧠 What It Does
+### 🧠 What It Does
 
 1. Sets `PYTHONPATH` to the current directory to ensure module resolution.
 2. Creates the output directory if it doesn’t exist.
@@ -38,9 +41,8 @@ python lin_opt/compute_errors.py \
   $MODEL_NAME
 ```
 
----
 
-## ▶️ Example Usage
+### ▶️ Example Usage
 
 ```bash
 ./train_network.sh
@@ -48,9 +50,8 @@ python lin_opt/compute_errors.py \
 
 Ensure the model name corresponds to a valid checkpoint, e.g., `mnist_dense_net` for `checkpoints/mnist_dense_net.pt`.
 
----
 
-## 🛠 Tips
+### 🛠 Tips
 
 - Make the script executable:
 
@@ -62,19 +63,17 @@ chmod +x train_network.sh
 
 ---
 
-# 📈 `run_experiment.sh`
+## `run_experiment.sh`
 
 This script performs a linear programming-based analysis to estimate worst-case quantization errors of a trained neural network.
 
----
 
-## 🎯 Purpose
+### 🎯 Purpose
 
 To validate the robustness of a quantized neural network by computing theoretical upper bounds on classification errors using linear programming.
 
----
 
-## ⚙️ Configuration Parameters
+### ⚙️ Configuration Parameters
 
 | Variable      | Description                                                                 |
 |---------------|-----------------------------------------------------------------------------|
@@ -84,9 +83,8 @@ To validate the robustness of a quantized neural network by computing theoretica
 | `BITS`        | Number of quantization bits                                                |
 | `OUTPUT_DIR`  | Directory where results will be saved                                      |
 
----
 
-## 🧠 What It Does
+### 🧠 What It Does
 
 1. Sets `PYTHONPATH` to the project root for proper module resolution.
 2. Ensures the output directory exists.
@@ -102,9 +100,8 @@ python optimization/compute_errors_lp.py \
   --outputdir $OUTPUT_DIR
 ```
 
----
 
-## ▶️ Example Usage
+### ▶️ Example Usage
 
 ```bash
 ./run_experiment.sh
@@ -112,9 +109,8 @@ python optimization/compute_errors_lp.py \
 
 Ensure the model file exists in the expected path, e.g., `checkpoints/mnist_smalldensenet_10.pt`.
 
----
 
-## 🛠 Tips
+### 🛠 Tips
 
 - Make the script executable:
 
