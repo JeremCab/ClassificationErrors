@@ -9,7 +9,7 @@ The experiment pipeline consists of the two following steps:
 
 ---
 
-## `train_network.sh`
+## 1. `train_network.sh`
 
 This script analyzes classification errors between an original neural network and its quantized counterpart using a direct evaluation strategy.
 
@@ -68,7 +68,7 @@ chmod +x train_network.sh
 
 ---
 
-## `run_experiment.sh`
+## 2. `run_experiment.sh`
 
 This script performs a linear programming-based analysis to estimate worst-case quantization errors of a trained neural network.
 
