@@ -7,6 +7,7 @@ import click
 import numpy as np
 import torch
 
+from config import DEVICE
 from preprocessing import create_comparing_network, eval_one_sample
 from utils.network import load_network, SmallConvNet, SmallDenseNet
 from utils.dataset import create_dataset
@@ -46,7 +47,9 @@ def check_upper_bounds(A, b, input1, input2):
 
 def check_saturations(net, input1, input2):
     
-    input2 = torch.tensor(input2).reshape(1, 1, 28, 28).cuda()
+    device = next(net.parameters()).device
+
+    input2 = torch.tensor(input2).reshape(1, 1, 28, 28).to(device)
 
     saturation1 = eval_one_sample(net, input1)
     saturation2 = eval_one_sample(net, input2)
@@ -66,7 +69,6 @@ def check_saturations(net, input1, input2):
 
 def main(start, end, bits, outputdir): 
     
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE=1    
     NETWORK="mnist_dense_net.pt"
     MODEL = SmallDenseNet 
@@ -93,16 +95,19 @@ def main(start, end, bits, outputdir):
         real_error = (out2 - out1).abs().sum().item()
         computed_error = compnet(inputs).item()
         
-        
+        # Objective function
         # min c @ x
         c = -1*create_c(compnet, inputs)
 
+        # Inequality constraints
         # A_ub @ x <= b_ub
         A_ub, b_ub = create_upper_bounds(compnet, inputs)
         #b_ub = torch.zeros((A_ub.shape[0],), dtype=torch.float64)
         #b_ub = torch.full((A_ub.shape[0],), -TOL, dtype=torch.float64)
         
-        # A_eq @ x == b_eq
+        # XXX Additional equality constraints (not in the paper)
+        # to account for the constant part of the LP, i.e., y_0 = 1
+        # A_eq @ x == b_eq 
         A_eq = torch.zeros((1, N+1)).double()
         A_eq[0, 0] = 1.0
         b_eq = torch.zeros((1,)).double()
@@ -120,22 +125,24 @@ def main(start, end, bits, outputdir):
 
         assert np.isclose(x[0], 1.0)
 
+        # y is the solution, i.e., the input with maximal error
         y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).to(DEVICE)
-        err_by_net = compnet(y).item()
+        err_by_net = compnet(y).item() # gives the error related to this solution
         
+        # sanity check that the network really procudes the same error as the one computed by the LP
         err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item()
 
         try: 
-            assert np.isclose(-err, err_by_net)
-            assert np.isclose(err, err_by_sol)
+            assert np.isclose(-err, err_by_net) # sanity check!!!
+            assert np.isclose(err, err_by_sol)  # sanity check!!!
             
-            check_upper_bounds(A_ub, b_ub, inputs, x[1:])
-            check_saturations(net, inputs, x[1:])
+            check_upper_bounds(A_ub, b_ub, inputs, x[1:]) # check that the solution is correct!!!
+            check_saturations(net, inputs, x[1:])         # check that the solution is in the correct saturation region!!!
         except AssertionError:
             print(" *** Optimisation FAILED. *** ")
             # pass
         
-        with open(f"{outputdir}/results_{start}_{end}.csv", "w") as f: # XXX MY FIX "a" -> "w"
+        with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
             print(f"{real_error:.6f},{computed_error:.6f},{-err:.6f}", file=f)
         #np.save(f"{RESULT_PATH}/{i}.npy", np.array(x[1:], dtype=np.float64))
         #np.save(f"{RESULT_PATH}/{i}_orig.npy", inputs.cpu().numpy())

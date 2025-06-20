@@ -86,7 +86,7 @@ def prune_network(net, saturations):
     return net
 
 def squeeze_network(net):
-    """ Assumes the net is already pruned for some particular saturation.
+    """Assumes the net is already pruned for some particular saturation.
     Creates an equivalent network that has only one layer. (Squeeze the linear layers into one).
     This means computing the "shortcut weights" associated with the fixed saturation.
     """

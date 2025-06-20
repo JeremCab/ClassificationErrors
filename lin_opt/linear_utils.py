@@ -3,8 +3,8 @@ import torch.nn as nn
 
 from preprocessing import eval_one_sample, squeeze_network, prune_network, get_subnetwork
 
-TOL = 1e-8
-TOL2 = 1e-9
+TOL = 1e-8   # almost 0: to check the bounds
+TOL2 = 1e-9  # almost 0: to check the bounds
 
 def create_c(compnet, inputs):
     assert inputs.shape[0] == 1 # one sample in a batch
@@ -22,7 +22,7 @@ def create_c(compnet, inputs):
     
     c = torch.hstack([b, W.flatten()])
 
-    return c 
+    return c
 
 def create_upper_bounds(net, inputs):
 
@@ -34,12 +34,13 @@ def create_upper_bounds(net, inputs):
 
     A_list = []
     bound_list = [] 
+    # XXX We compute the shortcut weights of each layer j (squeeze the subnet up to layer j) => W_ji and W_j0
     for i, saturation in enumerate(saturations):
         subnet = get_subnetwork(net, i)
         if i == 0:
             target = subnet
         else:
-            target = squeeze_network(prune_network(subnet, saturations[:i]))
+            target = squeeze_network(prune_network(subnet, saturations[:i])) # XXX prunning can be done once for all before... and pass the pruned networks here
 
         W = target[-1].weight.data
         b = target[-1].bias.data
@@ -53,8 +54,8 @@ def create_upper_bounds(net, inputs):
         bound_for_lower = torch.full((W_lower.shape[0],), -TOL, dtype=torch.float64)
         bound_for_higher = torch.full((W_higher.shape[0],), -TOL, dtype=torch.float64)
         
-        W = torch.vstack([W_lower, -1*W_higher])
-        b = torch.vstack([b_lower, -1*b_higher])
+        W = torch.vstack([W_lower, -1*W_higher]) # multiplied by -1 to transform lower bounds into upper bounds (linprog pkg)
+        b = torch.vstack([b_lower, -1*b_higher]) # multiplied by -1 to transform lower bounds into upper bounds (linprog pkg)
         
         A = torch.hstack([b, W])
         bound = torch.hstack([bound_for_lower, bound_for_higher])

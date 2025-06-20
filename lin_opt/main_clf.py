@@ -49,7 +49,6 @@ def check_upper_bounds(A, b, input1, input2):
     
         #   print(result[wrong_indexes])
 
-    
 
 def check_saturations(net, input1, input2):
     
@@ -65,6 +64,7 @@ def check_saturations(net, input1, input2):
     
     print("Check saturations", torch.all(saturation1 == saturation2).item())
     assert torch.all(saturation1 == saturation2)
+
 
 @click.command()
 @click.argument("start", type=int)
@@ -91,10 +91,10 @@ def main(start, end, bits, outputdir):
     data = create_dataset(train=False, batch_size=BATCH_SIZE)
 
     for i, (inputs, labels) in enumerate(data):
+        print(f"***************** Computation {i} *****************") # XXX
         maximas = []
         label = labels[0].item()
 
-        
         if i < start or i >= end:
             continue
 
@@ -106,7 +106,6 @@ def main(start, end, bits, outputdir):
         if preds[0].item() != label:
             print("wrong prediction, skipping")
             continue
-
 
         for other in range(10): # TODO FIX number 10 to number classes
             if other == label:
@@ -128,6 +127,7 @@ def main(start, end, bits, outputdir):
 
             # comparing_network_classifier computes net2(other) - net(label)
             # it shold be maximised to get wrong prediction
+            # XXX HAVEN'T WE ALREADY CREATED THE NETWORKS compnet ABOVE?
             compnet_classifier = create_comparing_network_classifier(compnet, label, other)
             
             """
