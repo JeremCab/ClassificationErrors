@@ -1,9 +1,10 @@
 import sys
 import os
+import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import click
+# import click
 import numpy as np
 import torch
 
@@ -61,16 +62,10 @@ def check_saturations(net, input1, input2):
     assert torch.all(saturation1 == saturation2)
 
 
-@click.command()
-@click.argument("start", type=int)
-@click.argument("end", type=int)
-@click.option("-b", "--bits", default=16)
-@click.option("--outputdir", default="results")
-
-def main(start, end, bits, outputdir): 
+def compute_errors_lp(model_name, start, end, bits, outputdir): 
     
     BATCH_SIZE=1    
-    NETWORK="mnist_dense_net.pt"
+    NETWORK=f"checkpoints/{model_name}"
     MODEL = SmallDenseNet 
     LAYERS = 4
     INPUT_SIZE = (1, 28, 28) 
@@ -154,5 +149,19 @@ if __name__ == "__main__":
     #test_compnet() # 2.
     #test_squeezed_compnet() # 3.
 
+    parser = argparse.ArgumentParser(description="Compute error bounds for a quantized network.")
+    parser.add_argument("--model_name", type=str, help="Base model name")
+    parser.add_argument("--start", type=int, default=0, help="Start index of the dataset")
+    parser.add_argument("--end", type=int, default=10, help="End index of the dataset")
+    parser.add_argument("--bits", type=int, default=16, help="Number of quantization bits")
+    parser.add_argument("--outputdir", type=str, default="results", help="Output directory for results")
 
-    main()
+    args = parser.parse_args()
+
+    compute_errors_lp(
+        model_name=args.model_name,
+        start=args.start,
+        end=args.end,
+        bits=args.bits,
+        outputdir=args.outputdir
+    )

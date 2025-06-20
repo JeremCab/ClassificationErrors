@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Configuration
+MODEL_NAME="mnist_smalldensenet_10.pt"
 START=0
 END=10
 BITS=16
 OUTPUT_DIR="results"
-MODEL_NAME="mnist_dense_net"
 
 # Add project root to PYTHONPATH
 export PYTHONPATH=$(pwd)
@@ -15,17 +15,17 @@ mkdir -p $OUTPUT_DIR
 
 # Print configuration
 echo "Running analysis with the following parameters:"
-echo "  Start index:     $START"
-echo "  End index:       $END"
-echo "  Bits:            $BITS"
-echo "  Output dir:      $OUTPUT_DIR"
+echo "  Start sample:    $START"
+echo "  End sample:      $END"
+echo "  Nb quant. bits:  $BITS"
+echo "  Output dir:      $OUTPUT_DIR/"
 echo "  Model name:      $MODEL_NAME"
 echo
 
 # Run the script
-python lin_opt/compute_errors.py \
+python optimization/compute_errors_lp.py \
+  --model_name $MODEL_NAME\
   --start $START \
   --end $END \
   --bits $BITS \
   --outputdir $OUTPUT_DIR \
-  $MODEL_NAME
