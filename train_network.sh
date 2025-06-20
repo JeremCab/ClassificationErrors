@@ -17,7 +17,7 @@ export PYTHONPATH=$(pwd)
 echo "Training network with the following parameters:"
 echo "  Epochs:           $EPOCHS"
 echo "  Batch size:       $BATCH_SIZE"
-echo "  Checkpoint dir:   $CHECKPOINT_DIR"
+echo "  Checkpoint dir:   $CHECKPOINT_DIR/"
 echo
 
 # Run training
