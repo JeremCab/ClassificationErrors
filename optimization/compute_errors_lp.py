@@ -60,22 +60,37 @@ def check_upper_bounds(A, b, input_1, input_2, verbose=False):
         print("********************")
 
 
-def check_saturations(net, input1, input2, verbose=False):
-    
+def check_saturations(net, input_1, input_2, verbose=False):
+    """
+    Verifies that the network produces the same activation (saturation) pattern
+    for both the original data sample (input_1) and the LP solution (input_2).
+
+    Args:
+        net (torch.nn.Module): The trained neural network.
+        input_1 (torch.Tensor): Original data sample.
+        input_2 (array-like): LP solution (flattened), to be reshaped into data format.
+        verbose (bool): If True, prints whether the saturation pattern matches.
+
+    Raises:
+        AssertionError: If the saturation patterns do not match.
+    """
+
     device = next(net.parameters()).device
 
-    input2 = torch.tensor(input2).reshape(1, 1, 28, 28).to(device)
+    # Rehape sol of the LP to sample size
+    input_2 = torch.tensor(input_2).reshape(1, 1, 28, 28).to(device)
 
-    saturation1 = eval_one_sample(net, input1)
-    saturation2 = eval_one_sample(net, input2)
+    saturation_1 = eval_one_sample(net, input_1)
+    saturation_2 = eval_one_sample(net, input_2)
 
-    saturation1 = torch.hstack(saturation1)
-    saturation2 = torch.hstack(saturation2)
+    saturation_1 = torch.hstack(saturation_1)
+    saturation_2 = torch.hstack(saturation_2)
     
+    assert torch.all(saturation_1 == saturation_2)
     if verbose:
-        print("Check saturations", torch.all(saturation1 == saturation2).item())
-    
-    assert torch.all(saturation1 == saturation2)
+        print("********************")
+        print("Check saturations:", torch.all(saturation_1 == saturation_2).item())
+        print("********************")
 
 
 
