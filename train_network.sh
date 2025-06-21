@@ -1,31 +1,25 @@
 #!/bin/bash
 
 # Configuration
-START=0
-END=10
-BITS=16
-OUTPUT_DIR="results"
-MODEL_NAME="mnist_dense_net"
+EPOCHS=10
+BATCH_SIZE=512
+CHECKPOINT_DIR="checkpoints"
+
+# Create the directory if it doesn't exist
+mkdir -p $CHECKPOINT_DIR
 
 # Add project root to PYTHONPATH
 export PYTHONPATH=$(pwd)
 
-# Create output directory if it doesn't exist
-mkdir -p $OUTPUT_DIR
-
 # Print configuration
-echo "Running analysis with the following parameters:"
-echo "  Start index:     $START"
-echo "  End index:       $END"
-echo "  Bits:            $BITS"
-echo "  Output dir:      $OUTPUT_DIR"
-echo "  Model name:      $MODEL_NAME"
+echo "Training network with the following parameters:"
+echo "  Epochs:           $EPOCHS"
+echo "  Batch size:       $BATCH_SIZE"
+echo "  Checkpoint dir:   $CHECKPOINT_DIR"
 echo
 
-# Run the script
-python lin_opt/compute_errors.py \
-  --start $START \
-  --end $END \
-  --bits $BITS \
-  --outputdir $OUTPUT_DIR \
-  $MODEL_NAME
+# Run the training script using the correct path
+python propagate_intervals/train.py \
+  --batch_size $BATCH_SIZE \
+  --num_epochs $EPOCHS \
+  --checkpoint_dir $CHECKPOINT_DIR

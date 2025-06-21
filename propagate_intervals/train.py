@@ -89,7 +89,9 @@ if __name__ == "__main__":
           num_epochs=args.num_epochs, device=DEVICE)
     
     model_name = net.__class__.__name__.lower()  # set model name
+
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+    
     checkpoint_path = os.path.join(
         args.checkpoint_dir, f"{dataset_name}_{model_name}_{args.num_epochs}.pt"
     )
