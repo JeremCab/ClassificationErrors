@@ -17,11 +17,11 @@ This script trains a neural network on the MNIST dataset.
 
 ### ⚙️ Configuration Parameters
 
-| Variable          | Description                               |
-|-------------------|-------------------------------------------|
-| `EPOCHS`          | Starting index of samples to evaluate     |
-| `BATCH_SIZE`      | Ending index of samples to evaluate       |
-| `CHECKPOINT_DIR`  | Number of quantization bits               |
+| Variable          | Description                            |
+|-------------------|----------------------------------------|
+| `EPOCHS`          | Starting index of samples to evaluate  |
+| `BATCH_SIZE`      | Ending index of samples to evaluate    |
+| `CHECKPOINT_DIR`  | Number of quantization bits            |
 
 
 ### ▶️ Example Usage
@@ -32,7 +32,7 @@ This script trains a neural network on the MNIST dataset.
 
 ---
 
-## 2. `run_experiment.sh`
+## 2. `compute_errors.sh`
 
 ### 🎯 Purpose
 
@@ -43,7 +43,6 @@ This script performs a linear programming-based analysis to estimate worst-case 
 
 | Variable      | Description                                                         |
 |---------------|---------------------------------------------------------------------|
-
 | `MODEL_NAME`  | Name of the trained model file (e.g., `mnist_smalldensenet_10.pt`)  |
 | `START`       | Index of the first test sample to evaluate                          |
 | `END`         | Index of the last test sample to evaluate                           |
