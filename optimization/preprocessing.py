@@ -82,7 +82,6 @@ def prune_network(net, saturations):
     # create a fixed network
     net = nn.Sequential(*layers).to(device).eval()
     
-    print(net)
     return net
 
 def squeeze_network(net):

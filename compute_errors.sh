@@ -3,7 +3,7 @@
 # Configuration
 MODEL_NAME="mnist_smalldensenet_10.pt"
 START=0
-END=10
+END=2
 BITS=16
 OUTPUT_DIR="results"
 

@@ -16,37 +16,51 @@ from linear_utils import create_c, create_upper_bounds, optimize
 from linear_utils import TOL, TOL2
 
 
-def check_upper_bounds(A, b, input1, input2):
+def check_upper_bounds(A, b, input_1, input_2, verbose=False):
+    """
+    This function checks the inequalities contraints A @ x <= ε of the linear program (LP)
+    for both the original input sample (`input_1`) and the solution from the LP (`input_2`).
+
+    Args:
+        A (torch.Tensor): The constraint matrix of shape (m, n).
+        b (torch.Tensor): The constraint vector of shape (m,).
+        input_1 (torch.Tensor): The original input sample.
+        input_2 (torch.Tensor or np.ndarray): The flattened solution of the LP.
+        verbose (bool): If True, prints diagnostic information when constraints are violated.
+
+    Raises:
+        AssertionError: If any of the inequality constraints are violated for input_1 or input_2.
+    """
 
     A = A.cpu()
 
-    print(A.shape)
+    input_1 = input_1.cpu() # put sample (input_1) back to cpu
+    # Note that the sol of the LP (input_2) is already on cpu.
     
-    input1 = input1.cpu()
-    
-    input1 = torch.hstack([torch.tensor(1),
-                           input1.reshape(-1)])
-    input2 = torch.hstack([torch.tensor(1),
-                           torch.tensor(input2)])
-    print(input1.shape)
-    print(input2.shape)
+    input_1 = torch.hstack([torch.tensor(1), input_1.reshape(-1)])   # add 1 at the beginning for bias
+    input_2 = torch.hstack([torch.tensor(1), torch.tensor(input_2)]) # add 1 at the beginning for bias
 
-    result = A @ input1
-    print("Check upper bounds 1: ", torch.all(result <= TOL + TOL2))
-    assert torch.all(result <= TOL + TOL2)
+    result_1 = A @ input_1
+    assert torch.all(result_1 <= TOL + TOL2)
     
-    result = A @ input2 
-    print("Check upper bounds 2: ", torch.all(result <= TOL + TOL2 ))
-    assert torch.all(result <= TOL + TOL2)
+    result_2 = A @ input_2 
+    assert torch.all(result_2 <= TOL + TOL2)
     
-    wrong_indexes = torch.logical_not(result <= TOL + TOL2)
-    print(wrong_indexes.sum())
+    wrong_indexes = torch.logical_not(result_2 <= TOL + TOL2)      # mask of the violated constraints
     
-    print(result[wrong_indexes])
+    if verbose:
+        print("********************")
+        print(A.shape)
+        print(input_1.shape)
+        print(input_2.shape)
+        print("Check upper bounds 1: ", torch.all(result_1 <= TOL + TOL2).item())
+        print("Check upper bounds 2: ", torch.all(result_2 <= TOL + TOL2 ).item())
+        print("Nb of wrong indices:", wrong_indexes.sum().item())
+        print("Wrong indices:", result_2[wrong_indexes])
+        print("********************")
 
-    
 
-def check_saturations(net, input1, input2):
+def check_saturations(net, input1, input2, verbose=False):
     
     device = next(net.parameters()).device
 
@@ -58,8 +72,11 @@ def check_saturations(net, input1, input2):
     saturation1 = torch.hstack(saturation1)
     saturation2 = torch.hstack(saturation2)
     
-    print("Check saturations", torch.all(saturation1 == saturation2).item())
+    if verbose:
+        print("Check saturations", torch.all(saturation1 == saturation2).item())
+    
     assert torch.all(saturation1 == saturation2)
+
 
 
 def compute_errors_lp(model_name, start, end, bits, outputdir): 
@@ -75,8 +92,6 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
     net2 = load_network(MODEL, NETWORK, device=DEVICE)
     compnet = create_comparing_network(net, net2, bits=bits)
     
-    print("*** Networks N and Ñ side by side\n\n", compnet)
-
     data = create_dataset(train=False, batch_size=BATCH_SIZE)
 
     i = 0    
@@ -100,7 +115,7 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
         #b_ub = torch.zeros((A_ub.shape[0],), dtype=torch.float64)
         #b_ub = torch.full((A_ub.shape[0],), -TOL, dtype=torch.float64)
         
-        # XXX Additional equality constraints (not in the paper)
+        # Additional equality constraints (not in the paper)
         # to account for the constant part of the LP, i.e., y_0 = 1
         # A_eq @ x == b_eq 
         A_eq = torch.zeros((1, N+1)).double()
@@ -112,11 +127,9 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
         l = -0.5
         u = 3.0
 
-        # err, x = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u) 
-        # print("result:", -err)
-        res = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u) # XXX MY FIX
-        err = res.fun # XXX MY FIX
-        x = res.x     # XXX MY FIX
+        res = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u)
+        err = res.fun
+        x = res.x
 
         assert np.isclose(x[0], 1.0)
 
@@ -128,11 +141,12 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
         err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item()
 
         try: 
-            assert np.isclose(-err, err_by_net) # sanity check!!!
-            assert np.isclose(err, err_by_sol)  # sanity check!!!
+            assert np.isclose(-err, err_by_net) # sanity check!
+            assert np.isclose(err, err_by_sol)  # sanity check!
             
-            check_upper_bounds(A_ub, b_ub, inputs, x[1:]) # check that the solution is correct!!!
-            check_saturations(net, inputs, x[1:])         # check that the solution is in the correct saturation region!!!
+            # check inequality constraints for the data sample (inputs) and the sol of the LP (x[1:])
+            check_upper_bounds(A_ub, b_ub, inputs, x[1:])
+            check_saturations(net, inputs, x[1:])         # check that the solution is in the correct saturation region!
         except AssertionError:
             print(" *** Optimisation FAILED. *** ")
             # pass

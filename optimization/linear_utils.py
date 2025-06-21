@@ -34,7 +34,7 @@ def create_upper_bounds(net, inputs):
 
     A_list = []
     bound_list = [] 
-    # XXX We compute the shortcut weights of each layer j (squeeze the subnet up to layer j) => W_ji and W_j0
+    # Compute the shortcut weights of each layer j (squeeze the subnet up to layer j) => W_ji and W_j0
     for i, saturation in enumerate(saturations):
         subnet = get_subnetwork(net, i)
         if i == 0:
