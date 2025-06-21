@@ -1,12 +1,14 @@
 import sys
 import os
-import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# import click
+from tqdm import tqdm
+import argparse
 import numpy as np
+
 import torch
+from torch.utils.data import Subset
 
 from config import DEVICE
 from preprocessing import create_comparing_network, eval_one_sample
@@ -96,7 +98,6 @@ def check_saturations(net, input_1, input_2, verbose=False):
 
 def compute_errors_lp(model_name, start, end, bits, outputdir): 
     
-    BATCH_SIZE=1    
     NETWORK=f"checkpoints/{model_name}"
     MODEL = SmallDenseNet 
     LAYERS = 4
@@ -104,34 +105,32 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
     N = 1 * 28 * 28 
 
     net = load_network(MODEL, NETWORK, device=DEVICE)
-    net2 = load_network(MODEL, NETWORK, device=DEVICE)
-    compnet = create_comparing_network(net, net2, bits=bits)
+    net_approx = load_network(MODEL, NETWORK, device=DEVICE)
+    compnet = create_comparing_network(net, net_approx, bits=bits)
     
-    data = create_dataset(train=False, batch_size=BATCH_SIZE)
+    test_dataset = create_dataset(mode="experiment")
+    subset_dataset = Subset(test_dataset, list(range(start, end)))
 
-    i = 0    
-    for i, (inputs, labels) in enumerate(data):
-        if i < start or i >= end:
-            continue
-        inputs = inputs.to(DEVICE).double()
+    for sample, _ in tqdm(subset_dataset, desc="Processing"):
 
-        out1 = net(inputs)
-        out2 = net2(inputs)
-        real_error = (out2 - out1).abs().sum().item()
-        computed_error = compnet(inputs).item()
+        sample = sample.to(DEVICE).double()
+
+        out_1 = net(sample)
+        out_2 = net_approx(sample)
+        real_error = (out_2 - out_1).abs().sum().item()
+        computed_error = compnet(sample).item()
         
         # Objective function
         # min c @ x
-        c = -1*create_c(compnet, inputs)
+        c = -1*create_c(compnet, sample)
 
         # Inequality constraints
         # A_ub @ x <= b_ub
-        A_ub, b_ub = create_upper_bounds(compnet, inputs)
+        A_ub, b_ub = create_upper_bounds(compnet, sample)
         #b_ub = torch.zeros((A_ub.shape[0],), dtype=torch.float64)
         #b_ub = torch.full((A_ub.shape[0],), -TOL, dtype=torch.float64)
         
-        # Additional equality constraints (not in the paper)
-        # to account for the constant part of the LP, i.e., y_0 = 1
+        # Equality constraints (not in the paper) capturing the constant part of the LP, i.e., y_0 = 1
         # A_eq @ x == b_eq 
         A_eq = torch.zeros((1, N+1)).double()
         A_eq[0, 0] = 1.0
@@ -143,40 +142,39 @@ def compute_errors_lp(model_name, start, end, bits, outputdir):
         u = 3.0
 
         res = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u)
-        err = res.fun
-        x = res.x
+        err = res.fun # Error computed by the LP
+        x = res.x     # Solution of the LP
 
         assert np.isclose(x[0], 1.0)
 
-        # y is the solution, i.e., the input with maximal error
+        # y is the LP solution, i.e., the input in the saturation polytope yielding a maximal error
         y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).to(DEVICE)
-        err_by_net = compnet(y).item() # gives the error related to this solution
-        
-        # sanity check that the network really procudes the same error as the one computed by the LP
-        err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item()
+        err_by_net = compnet(y).item()                                            # Error computed by compnet, i.e., |N(x) - Ñ(x)|
+        err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(DEVICE)).item() # Error computed by the LP (should be err)
 
         try: 
-            assert np.isclose(-err, err_by_net) # sanity check!
-            assert np.isclose(err, err_by_sol)  # sanity check!
+            assert np.isclose(-err, err_by_net) # sanity check
+            assert np.isclose(err, err_by_sol)  # sanity check
             
-            # check inequality constraints for the data sample (inputs) and the sol of the LP (x[1:])
-            check_upper_bounds(A_ub, b_ub, inputs, x[1:])
-            check_saturations(net, inputs, x[1:])         # check that the solution is in the correct saturation region!
+            # Check inequality constraints for both the data sample and the LP sol
+            check_upper_bounds(A_ub, b_ub, sample, x[1:])
+            # Check that the data sample and the associated LP sol yield same saturations
+            check_saturations(net, sample, x[1:])
         except AssertionError:
-            print(" *** Optimisation FAILED. *** ")
+            print("Optimisation FAILED!")
             # pass
         
         with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
             print(f"{real_error:.6f},{computed_error:.6f},{-err:.6f}", file=f)
         #np.save(f"{RESULT_PATH}/{i}.npy", np.array(x[1:], dtype=np.float64))
         #np.save(f"{RESULT_PATH}/{i}_orig.npy", inputs.cpu().numpy())
-        i += 1
-        
+
+
 if __name__ == "__main__":
 
     # test_squeeze() # 1.
-    #test_compnet() # 2.
-    #test_squeezed_compnet() # 3.
+    # test_compnet() # 2.
+    # test_squeezed_compnet() # 3.
 
     parser = argparse.ArgumentParser(description="Compute error bounds for a quantized network.")
     parser.add_argument("--model_name", type=str, help="Base model name")

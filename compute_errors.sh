@@ -3,7 +3,7 @@
 # Configuration
 MODEL_NAME="mnist_smalldensenet_10.pt"
 START=0
-END=2
+END=3
 BITS=16
 OUTPUT_DIR="results"
 
@@ -14,6 +14,7 @@ export PYTHONPATH=$(pwd)
 mkdir -p $OUTPUT_DIR
 
 # Print configuration
+echo
 echo "Running analysis with the following parameters:"
 echo "  Start sample:    $START"
 echo "  End sample:      $END"

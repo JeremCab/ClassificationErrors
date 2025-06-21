@@ -12,6 +12,7 @@ mkdir -p $CHECKPOINT_DIR
 export PYTHONPATH=$(pwd)
 
 # Print configuration
+echo
 echo "Training network with the following parameters:"
 echo "  Epochs:           $EPOCHS"
 echo "  Batch size:       $BATCH_SIZE"

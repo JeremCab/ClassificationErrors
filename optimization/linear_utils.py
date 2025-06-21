@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from scipy.optimize import linprog
 
 from preprocessing import eval_one_sample, squeeze_network, prune_network, get_subnetwork
 
@@ -66,14 +67,15 @@ def create_upper_bounds(net, inputs):
     return torch.vstack(A_list), torch.hstack(bound_list)
 
 
-def optimize(c, A_ub, b_ub, A_eq, b_eq, l, u):
+def optimize(c, A_ub, b_ub, A_eq, b_eq, l, u, verbose=False):
+
     c = c.cpu().numpy()
     A_ub, b_ub = A_ub.cpu().numpy(), b_ub.cpu().numpy()
     A_eq, b_eq = A_eq.cpu().numpy(), b_eq.cpu().numpy()
-    
-    from scipy.optimize import linprog
 
     res = linprog(c, A_ub, b_ub, A_eq, b_eq, bounds=(l, u))
-    print(res)
+
+    if verbose:
+        print(res)
     
     return res

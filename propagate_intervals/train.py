@@ -16,58 +16,55 @@ from utils.network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
 
 
 def train(net, train_data, val_data, optimizer, criterion, num_epochs, device):
-
     for epoch in trange(num_epochs, desc="Epochs"):
 
+        # --- Training ---
+        net.train()
         running_loss = 0.0
         correct = 0
-        num = 0
-        i = 0
-        net.train()
-        for data in train_data:
-            i += 1
-            # get the inputs; data is a list of [inputs, labels]
-            inputs, labels = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            
-            # zero the parameter gradients
-            optimizer.zero_grad()
+        total = 0
 
-            # forward + backward + optimize
+        for inputs, labels in train_data:
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            optimizer.zero_grad()
             outputs = net(inputs)
             loss = criterion(outputs, labels)
 
-            _, predicted = torch.max(outputs.data, 1)
-            num += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            
             loss.backward()
             optimizer.step()
 
-            # print statistics
-            running_loss += loss.item()
-            #        if i % 10 == 9:    # print every 2000 mini-batches
-    #    print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / i:.3f} acc: {100*correct/num:.3f}')
+            running_loss += loss.item() * inputs.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+        train_loss = running_loss / total
+        train_acc = 100 * correct / total
+
+        # --- Validation ---
+        net.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
 
         with torch.no_grad():
-            net.eval()
-            num, correct = 0, 0
-            running_loss = 0
-            i = 0
             for inputs, labels in val_data:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = net(inputs)
+                loss = criterion(outputs, labels)
 
-                loss = criterion(outputs, labels)        
+                val_loss += loss.item() * inputs.size(0)
                 _, predicted = torch.max(outputs.data, 1)
-                num += labels.size(0)
-                correct += (predicted == labels).sum().item()
-                running_loss += loss.item()
-                i += 1
-        tqdm.write(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / i:.3f} vall acc: {100*correct/num:.3f}')
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
 
-        running_loss = 0.0
+        val_loss /= val_total
+        val_acc = 100 * val_correct / val_total
+
+        tqdm.write(f"Epoch {epoch+1:02d} - "
+                   f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
+                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
 
 
 if __name__ == "__main__":
@@ -78,7 +75,7 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
     args = parser.parse_args()
 
-    train_data, val_data, dataset_name = create_dataset(train=True, batch_size=args.batch_size)
+    train_data, val_data, test_data, dataset_name = create_dataset(batch_size=args.batch_size)
 
     net = SmallDenseNet().to(DEVICE)
     
@@ -97,4 +94,4 @@ if __name__ == "__main__":
     )
 
     torch.save(net.state_dict(), checkpoint_path)
-    print(f"Training complete. Network saved to {checkpoint_path}.")
+    print(f"Training complete. Network saved: {checkpoint_path}")
