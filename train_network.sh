@@ -1,26 +1,15 @@
 #!/bin/bash
 
-# Configuration
-EPOCHS=10
-BATCH_SIZE=512
-CHECKPOINT_DIR="checkpoints"
-
-# Create the directory if it doesn't exist
-mkdir -p $CHECKPOINT_DIR
+# Path to config file
+CONFIG_PATH="configs/train.yaml"
 
 # Add project root to PYTHONPATH
 export PYTHONPATH=$(pwd)
 
-# Print configuration
+# Print configuration being used
 echo
-echo "Training network with the following parameters:"
-echo "  Epochs:           $EPOCHS"
-echo "  Batch size:       $BATCH_SIZE"
-echo "  Checkpoint dir:   $CHECKPOINT_DIR"
+echo "Training network with config: $CONFIG_PATH"
 echo
 
-# Run the training script using the correct path
-python propagate_intervals/train.py \
-  --batch_size $BATCH_SIZE \
-  --num_epochs $EPOCHS \
-  --checkpoint_dir $CHECKPOINT_DIR
+# Run the training script with config path
+python propagate_intervals/train.py --config $CONFIG_PATH

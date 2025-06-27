@@ -1,5 +1,6 @@
 import sys
 import os
+import yaml
 import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -14,6 +15,17 @@ from config import DEVICE
 from utils.dataset import create_dataset
 from utils.network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
 
+
+def parse_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, required=True, 
+                        help='Path to YAML config file')
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
 
 def train(net, train_data, val_data, optimizer, criterion, num_epochs, device):
     for epoch in trange(num_epochs, desc="Epochs"):
@@ -69,13 +81,13 @@ def train(net, train_data, val_data, optimizer, criterion, num_epochs, device):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=1024)
-    parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
-    args = parser.parse_args()
+    config = parse_config()
 
-    train_data, val_data, test_data, dataset_name = create_dataset(batch_size=args.batch_size)
+    batch_size = config["batch_size"]
+    num_epochs = config["num_epochs"]
+    checkpoint_dir = config["checkpoint_dir"]
+
+    train_data, val_data, test_data, dataset_name = create_dataset(batch_size=batch_size)
 
     net = SmallDenseNet().to(DEVICE)
     
@@ -83,14 +95,14 @@ if __name__ == "__main__":
     optimizer = optim.Adam(net.parameters(), weight_decay=0.0)
 
     train(net, train_data, val_data, optimizer, criterion, 
-          num_epochs=args.num_epochs, device=DEVICE)
+          num_epochs=num_epochs, device=DEVICE)
     
     model_name = net.__class__.__name__.lower()  # set model name
 
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     
     checkpoint_path = os.path.join(
-        args.checkpoint_dir, f"{dataset_name}_{model_name}_{args.num_epochs}.pt"
+        checkpoint_dir, f"{dataset_name}_{model_name}_{num_epochs}_{batch_size}.pt"
     )
 
     torch.save(net.state_dict(), checkpoint_path)

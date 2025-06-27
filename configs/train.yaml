@@ -1,0 +1,4 @@
+# configs/train.yaml
+batch_size: 1024
+num_epochs: 1
+checkpoint_dir: checkpoints
