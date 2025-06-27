@@ -9,7 +9,6 @@ export PYTHONPATH=$(pwd)
 # Print configuration being used
 echo
 echo "Training network with config: $CONFIG_PATH"
-echo
 
 # Run the training script with config path
 python propagate_intervals/train.py --config $CONFIG_PATH

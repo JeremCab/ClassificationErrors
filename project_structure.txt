@@ -1,0 +1,45 @@
+.
+├── checkpoints
+├── compute_errors.sh
+├── config.py
+├── configs
+│   └── train.yaml
+├── data
+│   └── MNIST
+│       └── raw
+│           ├── t10k-images-idx3-ubyte
+│           ├── t10k-images-idx3-ubyte.gz
+│           ├── t10k-labels-idx1-ubyte
+│           ├── t10k-labels-idx1-ubyte.gz
+│           ├── train-images-idx3-ubyte
+│           ├── train-images-idx3-ubyte.gz
+│           ├── train-labels-idx1-ubyte
+│           └── train-labels-idx1-ubyte.gz
+├── optimization
+│   ├── __init__.py
+│   ├── compute_errors_lp.py
+│   ├── linear_utils.py
+│   ├── main_clf.py
+│   ├── preprocessing.py
+│   ├── quant_utils.py
+│   └── test.py
+├── project_structure.txt
+├── propagate_intervals
+│   ├── __init__.py
+│   ├── intervals.py
+│   ├── test.py
+│   ├── torch_conv_layer_to_fully_connected.py
+│   └── train.py
+├── README.md
+├── results
+│   ├── results_0_10.csv
+│   ├── results_0_2.csv
+│   ├── results_0_3.csv
+│   └── results_0_4.csv
+├── train_network.sh
+└── utils
+    ├── __init__.py
+    ├── dataset.py
+    └── network.py
+
+10 directories, 33 files

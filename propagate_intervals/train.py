@@ -11,7 +11,6 @@ import torch.nn as nn
 
 from tqdm import tqdm, trange
 
-from config import DEVICE
 from utils.dataset import create_dataset
 from utils.network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
 
@@ -83,14 +82,26 @@ if __name__ == "__main__":
 
     config = parse_config()
 
+    preferred_device = config.get("device", "cpu")
+
+    if preferred_device == "cuda" and torch.cuda.is_available():
+        DEVICE = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        DEVICE = torch.device("mps")
+    else:
+        DEVICE = torch.device("cpu")
+
+    print(f"Using device: {DEVICE}\n")
+
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
     checkpoint_dir = config["checkpoint_dir"]
-
+    
+    # Create dataset
     train_data, val_data, test_data, dataset_name = create_dataset(batch_size=batch_size)
 
+    # Train network
     net = SmallDenseNet().to(DEVICE)
-    
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), weight_decay=0.0)
 
@@ -102,7 +113,7 @@ if __name__ == "__main__":
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     checkpoint_path = os.path.join(
-        checkpoint_dir, f"{dataset_name}_{model_name}_{num_epochs}_{batch_size}.pt"
+        checkpoint_dir, f"{dataset_name}_{model_name}_{batch_size}_{num_epochs}.pt"
     )
 
     torch.save(net.state_dict(), checkpoint_path)
