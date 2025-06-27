@@ -1,7 +1,6 @@
 .
 ├── checkpoints
 ├── compute_errors.sh
-├── config.py
 ├── configs
 │   └── train.yaml
 ├── data
@@ -42,4 +41,4 @@
     ├── dataset.py
     └── network.py
 
-10 directories, 33 files
+10 directories, 32 files

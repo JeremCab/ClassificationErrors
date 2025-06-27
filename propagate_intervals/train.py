@@ -3,14 +3,14 @@ import os
 import yaml
 import argparse
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import torch
 import torch.optim as optim
 import torch.nn as nn
 
 from tqdm import tqdm, trange
 
+# Don't need this line since "export PYTHONPATH=$(pwd)" in train_network.sh
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.dataset import create_dataset
 from utils.network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
 
