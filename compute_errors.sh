@@ -1,39 +1,21 @@
-# #!/bin/bash
-
-# # Configuration
-# MODEL_NAME="mnist_smalldensenet_10.pt"
-# START=0
-# END=3
-# BITS=16
-# OUTPUT_DIR="results"
+# # Path to config file
+# CONFIG_PATH="configs/compute_errors.yaml"
 
 # # Add project root to PYTHONPATH
 # export PYTHONPATH=$(pwd)
 
-# # Create output directory if it doesn't exist
-# mkdir -p $OUTPUT_DIR
+# # Create output directory if it doesn't exist (parsed from YAML in the Python script)
 
-# # Print configuration
+# # Print configuration being used
 # echo
-# echo "Running analysis with the following parameters:"
-# echo "  Start sample:    $START"
-# echo "  End sample:      $END"
-# echo "  Nb quant. bits:  $BITS"
-# echo "  Output dir:      $OUTPUT_DIR/"
-# echo "  Model name:      $MODEL_NAME"
-# echo
+# echo "Running error analysis with config: $CONFIG_PATH"
 
 # # Run the script
-# python optimization/compute_errors_lp.py \
-#   --model_name $MODEL_NAME\
-#   --start $START \
-#   --end $END \
-#   --bits $BITS \
-#   --outputdir $OUTPUT_DIR \
+# python optimization/compute_errors_lp.py --config $CONFIG_PATH
+
+
 
 #!/bin/bash
-
-
 
 # Path to config file
 CONFIG_PATH="configs/compute_errors.yaml"
@@ -41,11 +23,23 @@ CONFIG_PATH="configs/compute_errors.yaml"
 # Add project root to PYTHONPATH
 export PYTHONPATH=$(pwd)
 
-# Create output directory if it doesn't exist (parsed from YAML in the Python script)
+# Extract the optimization type from the YAML config
+OPTIMIZATION=$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG_PATH'))['optimization'])")
 
-# Print configuration being used
+# Choose the appropriate Python script
+if [ "$OPTIMIZATION" == "linear" ]; then
+    SCRIPT="compute_errors_lp.py"
+elif [ "$OPTIMIZATION" == "non-linear" ]; then
+    SCRIPT="compute_errors_nlp.py"
+else
+    echo "Unknown optimization type: $OPTIMIZATION"
+    exit 1
+fi
+
+# Print what is going to be run
 echo
-echo "Running error analysis with config: $CONFIG_PATH"
+echo "Running error analysis using: $SCRIPT"
+echo "Config: $CONFIG_PATH"
 
-# Run the script
-python optimization/compute_errors_lp.py --config $CONFIG_PATH
+# Run the appropriate script with the config
+python optimization/$SCRIPT --config $CONFIG_PATH
