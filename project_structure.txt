@@ -1,7 +1,9 @@
 .
 ├── checkpoints
+│   └── mnist_smalldensenet_1024_2.pt
 ├── compute_errors.sh
 ├── configs
+│   ├── compute_errors.yaml
 │   └── train.yaml
 ├── data
 │   └── MNIST
@@ -41,4 +43,4 @@
     ├── dataset.py
     └── network.py
 
-10 directories, 32 files
+10 directories, 34 files
