@@ -7,12 +7,13 @@ import yaml
 import numpy as np
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Subset
 
 # Don't need this line since "export PYTHONPATH=$(pwd)" in train_network.sh
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from propagate_intervals.train import parse_config
-from preprocessing import create_comparing_network, eval_one_sample
+from preprocessing import LossHead, create_comparing_network, eval_one_sample
 from utils.network import load_network, SmallConvNet, SmallDenseNet
 from utils.dataset import create_dataset
 from linear_utils import create_c, create_upper_bounds, optimize
@@ -97,7 +98,8 @@ def check_saturations(net, input_1, input_2, verbose=False):
 
 
 
-def compute_errors_lp(model_name, start, end, bits, outputdir, device): 
+# *** WORK ON THIS NOW *** # XXX
+def compute_errors_nlp(model_name, start, end, bits, outputdir, device): 
     
     NETWORK=f"checkpoints/{model_name}"
     MODEL = SmallDenseNet 
@@ -107,8 +109,11 @@ def compute_errors_lp(model_name, start, end, bits, outputdir, device):
 
     net = load_network(MODEL, NETWORK, device=device)
     net_approx = load_network(MODEL, NETWORK, device=device)
-    compnet = create_comparing_network(net, net_approx, bits=bits)
-    
+
+    # NOTE: net_approx is modified here (not obvious, but after investgation)!!!
+    compnet = create_comparing_network(net, net_approx, bits=bits, skip_magic=True) # XXX was skip_magic=False before
+    ce_head = LossHead(compnet)
+
     test_dataset = create_dataset(mode="experiment")
     subset_dataset = Subset(test_dataset, list(range(start, end)))
 
@@ -116,14 +121,23 @@ def compute_errors_lp(model_name, start, end, bits, outputdir, device):
 
         sample = sample.to(device).double()
 
+        # XXX
         out_1 = net(sample)
         out_2 = net_approx(sample)
-        real_error = (out_2 - out_1).abs().sum().item()
-        computed_error = compnet(sample).item()
+
+        # real_error = -(softmax_out_1 * torch.log(softmax_out_2)).sum().item()
+        real_error_1 = -(F.softmax(out_1, dim=1) * F.log_softmax(out_2, dim=1)).sum().item()
+        computed_error = ce_head(sample).item()
         
+        assert abs(real_error_1 - computed_error) < TOL
+
         # Objective function
         # min c @ x
         c = -1*create_c(compnet, sample)
+        # XXX
+
+
+
 
         # Inequality constraints
         # A_ub @ x <= b_ub
@@ -176,26 +190,39 @@ if __name__ == "__main__":
     # # test_squeeze() # 1.
     # # test_compnet() # 2.
     # # test_squeezed_compnet() # 3.
-
-    config = parse_config()
     
-    DEVICE = config.get("device", "cpu")
-    print(f"Using device: {DEVICE}\n")
+    # # *** BEGINNING *** # (uncomment below once finished) XXX
+    # config = parse_config()
+    
+    # DEVICE = config.get("device", "cpu")
+    # print(f"Using device: {DEVICE}\n")
 
-    model_name = config["model_name"]
-    start = config["start"]
-    end = config["end"]
-    bits = config["bits"]
-    output_dir = config["output_dir"]
+    # model_name = config["model_name"]
+    # start = config["start"]
+    # end = config["end"]
+    # bits = config["bits"]
+    # output_dir = config["output_dir"]
 
-    # Create output directory if needed
-    os.makedirs(output_dir, exist_ok=True)
+    # # Create output directory if needed
+    # os.makedirs(output_dir, exist_ok=True)
 
-    compute_errors_lp(
-        model_name=model_name,
-        start=start,
-        end=end,
-        bits=bits,
-        outputdir=output_dir,
-        device=DEVICE
+    # compute_errors_nlp(
+    #     model_name=model_name,
+    #     start=start,
+    #     end=end,
+    #     bits=bits,
+    #     outputdir=output_dir,
+    #     device=DEVICE
+    # )
+    # # *** END *** # XXX
+
+
+# *** FOR TESTING *** # XXX
+    compute_errors_nlp(
+        model_name="mnist_smalldensenet_1024_2.pt",
+        start=0,
+        end=2,
+        bits=16,
+        outputdir="results",
+        device="cpu"
     )

@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 
 from quant_utils import lower_precision
 
@@ -133,8 +135,6 @@ def squeeze_network(net):
         new_layers = [layers[0]] + new_layers
 
     return nn.Sequential(*new_layers).to(device).eval()
-    
-
         
 
 def stack_linear_layers(layer1, layer2, common_input=False):
@@ -188,19 +188,18 @@ def magic_layer(layer1, layer2):
     new_layer.bias.data = magic_b
 
     return new_layer
-    
-    
+
     
 def create_comparing_network(net, net2, bits=16, skip_magic=False):
-    """Takes two networks and creates a super network, the two original networks are side by side and
+    """
+    Takes two networks and creates a super network, the two original networks are side by side and
     on the top they are connected to compute the sum of differences between their outputs. The
     second network is rounded for the given number of bits.
-
     """
 
     device = next(net.parameters()).device
 
-    twin = lower_precision(net2, bits=bits) 
+    twin = lower_precision(net2, bits=bits)
 
     layer_list = []
 
@@ -222,7 +221,7 @@ def create_comparing_network(net, net2, bits=16, skip_magic=False):
         elif isinstance(layer1, nn.ReLU):
             assert isinstance(layer2, nn.ReLU)
             layer_list.append(layer1)
-        elif isinstance(layer1, nn.Linear):
+        elif isinstance(layer1, nn.Linear): # stacks layers if nn.Linear
             assert isinstance(layer2, nn.Linear)
             layer_list.append(stack_linear_layers(layer1, layer2, common_input=first_linear))
             first_linear = False
@@ -238,16 +237,16 @@ def create_comparing_network(net, net2, bits=16, skip_magic=False):
 
         layer_list.append(magic_layer(sequence1[-1], sequence2[-1]))
     
-        
         layer_list.append(nn.ReLU())
     
-        output_layer = nn.Linear(20, 1).double() # TODO fix  the number
+        output_layer = nn.Linear(20, 1).double() # TODO fix the number
         output_layer.weight.data = torch.ones(1, 20).double()
         output_layer.bias.data = torch.zeros(1).double()
   
         layer_list.append(output_layer)
     
     return nn.Sequential(*layer_list).to(device)
+
 
 def get_subnetwork(net, i):
     """ Returns network up to i-th linear layer includisively."""
@@ -284,5 +283,48 @@ def create_comparing_network_classifier(net, label, other, in_orig=False):
     old_layers.append(output_layer)
 
     return nn.Sequential(*old_layers).to(device)
+
+
+# *** MY FUNCTIONS (JC) ***
+
+class LossHead(nn.Module):
+    """
+    A wrapper module that computes a custom loss between the first and second halves 
+    of the output logits from a base network.
+
+    Given a base network output of shape (batch_size, 2 * num_classes), it:
+    - Splits into two halves of size `num_classes`
+    - Applies appropriate activation
+    - Computes a loss between them (e.g., cross-entropy or KL divergence)
+
+    Args:
+        comp_net (nn.Sequential): The base comparison network producing output of shape (batch_size, 2 * num_classes).
+        loss_fn (Callable): Loss function like F.cross_entropy, F.kl_div, or similar.
+    """
+    
+    def __init__(self, comp_net: nn.Sequential, loss_fn="cross-entropy"):
+        super().__init__()
+        self.base = comp_net
+        self.loss_fn = loss_fn
+
+    def forward(self, x):
+        out = self.base(x)                         # Shape: (batch_size, 2 * num_classes)
+        total_dim = out.shape[1]
+        assert total_dim % 2 == 0, "Output must be divisible by 2"
+        num_classes = total_dim // 2
+
+        logits_1 = out[:, :num_classes]            # First half
+        logits_2 = out[:, num_classes:]            # Second half
+
+        if self.loss_fn == "cross-entropy":
+
+            probs_1 = F.softmax(logits_1, dim=1)
+            log_probs_2 = F.log_softmax(logits_2, dim=1)
+
+            return -(probs_1 * log_probs_2).sum(dim=1)# .mean()
+
+        else:
+            return self.loss_fn(logits_1, logits_2)
+
 
 

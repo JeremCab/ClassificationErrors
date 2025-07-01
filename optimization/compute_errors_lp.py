@@ -105,9 +105,10 @@ def compute_errors_lp(model_name, start, end, bits, outputdir, device):
     INPUT_SIZE = (1, 28, 28) 
     N = 1 * 28 * 28 
 
-    net = load_network(MODEL, NETWORK, device=device)
-    net_approx = load_network(MODEL, NETWORK, device=device)
-    compnet = create_comparing_network(net, net_approx, bits=bits)
+    net = load_network(MODEL, NETWORK, device=device).eval()
+    net_approx = load_network(MODEL, NETWORK, device=device).eval()
+    # NOTE: net_approx is modified here (not obvious, but after investgation)!!!
+    compnet = create_comparing_network(net, net_approx, bits=bits).eval()
     
     test_dataset = create_dataset(mode="experiment")
     subset_dataset = Subset(test_dataset, list(range(start, end)))
@@ -120,7 +121,8 @@ def compute_errors_lp(model_name, start, end, bits, outputdir, device):
         out_2 = net_approx(sample)
         real_error = (out_2 - out_1).abs().sum().item()
         computed_error = compnet(sample).item()
-        
+        print(real_error, computed_error)
+
         # Objective function
         # min c @ x
         c = -1*create_c(compnet, sample)

@@ -1,6 +1,6 @@
 # configs/compute_errors.yaml
 device: "cpu" # this part is on cpu for the moment...
-optimization: "non-linear"  # or "non-linear"
+optimization: "linear"  # or "non-linear"
 model_name: mnist_smalldensenet_1024_2.pt
 start: 0
 end: 3
