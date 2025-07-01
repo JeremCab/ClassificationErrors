@@ -17,6 +17,7 @@ from preprocessing import LossHead, create_comparing_network, eval_one_sample
 from utils.network import load_network, SmallConvNet, SmallDenseNet
 from utils.dataset import create_dataset
 from linear_utils import create_c, create_upper_bounds, optimize
+from nonlinear_utils import * # my imports for now...
 from linear_utils import TOL, TOL2
 
 
@@ -121,21 +122,23 @@ def compute_errors_nlp(model_name, start, end, bits, outputdir, device):
 
         sample = sample.to(device).double()
 
+
         # XXX
         out_1 = net(sample)
         out_2 = net_approx(sample)
+        out_3 = compnet(sample)
+        print("out_3", out_3, out_3.shape)
 
         # real_error = -(softmax_out_1 * torch.log(softmax_out_2)).sum().item()
-        real_error_1 = -(F.softmax(out_1, dim=1) * F.log_softmax(out_2, dim=1)).sum().item()
+        real_error = -(F.softmax(out_1, dim=1) * F.log_softmax(out_2, dim=1)).sum().item()
         computed_error = ce_head(sample).item()
-        
-        assert abs(real_error_1 - computed_error) < TOL
+        print("Error:", real_error, computed_error)
+        assert abs(real_error - computed_error) < TOL
 
         # Objective function
         # min c @ x
         c = -1*create_c(compnet, sample)
         # XXX
-
 
 
 
