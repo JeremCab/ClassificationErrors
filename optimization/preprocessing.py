@@ -9,8 +9,7 @@ from quant_utils import lower_precision
 NUMCLASSES = 10 # fix this
 
 def eval_one_sample(net, sample):
-    """evaluates one sample and returns boolean vector 
-    of relu's saturations"""
+    """evaluates one sample and returns boolean vector of relu's saturations"""
     saturations = []
     
     outputs = sample
@@ -27,8 +26,8 @@ def eval_one_sample(net, sample):
 
 
 def prune_network(net, saturations):
-    """Creates a new network that is equivalent with the given net on the assumption that saturations
-    are fixed. Unused neurons are deleted.
+    """Creates a new network that is equivalent with the given net on the assumption that saturations are fixed. 
+    Unused neurons are deleted.
     """
 
     device = next(net.parameters()).device
@@ -285,7 +284,36 @@ def create_comparing_network_classifier(net, label, other, in_orig=False):
     return nn.Sequential(*old_layers).to(device)
 
 
-# *** MY FUNCTIONS (JC) ***
+# ************************* #
+# *** MY FUNCTIONS (JC) *** #
+# ************************* #
+
+
+def truncate_after_last_relu(model: nn.Module) -> nn.Sequential:
+    """
+    Removes all layers after the last ReLU (exclusive). Keeps the last ReLU.
+
+    Args:
+        model (nn.Module): A model containing an nn.Sequential block.
+
+    Returns:
+        nn.Sequential: Truncated model with layers up to and including the last ReLU.
+    """
+    # Get the Sequential block
+    if isinstance(model, nn.Sequential):
+        layers = list(model.children())
+    else:
+        seq = next((m for m in model.children() if isinstance(m, nn.Sequential)), None)
+        if seq is None:
+            raise ValueError("Model must contain an nn.Sequential block.")
+        layers = list(seq.children())
+
+    # Find the index of the last ReLU
+    last_relu_idx = max(i for i, l in enumerate(layers) if isinstance(l, nn.ReLU))
+
+    # Keep layers up to and including the last ReLU
+    return nn.Sequential(*layers[:last_relu_idx + 1])
+
 
 class LossHead(nn.Module):
     """

@@ -39,7 +39,7 @@ CLASSES = ('plane', 'car', 'bird', 'cat',
 
 
 
-def create_dataset(batch_size=512, num_workers=2, val_split=0.1, data_root="./data", mode="train"):
+def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./data", mode="train"):
     """
     Creates and returns train, validation, and test data loaders for MNIST.
     
