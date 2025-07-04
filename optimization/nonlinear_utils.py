@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.optimize import Bounds, linprog, minimize, check_grad
+from scipy.optimize import Bounds, linprog, minimize, check_grad, SR1, BFGS
 
 from preprocessing import eval_one_sample, squeeze_network, prune_network, get_subnetwork, truncate_after_last_relu
 
@@ -142,11 +142,11 @@ def compute_loss_torch(logits_1, logits_2, loss_fn="cross-entropy"):
 # ------------ #
 
 
-def objective_coeff(compnet, sample):
+def objective_coeff(compnet, sample, mode="np"):
     """
     Get shortcut weights and biases necessary for the computation of the objective function.
     These shortcut weights are not mentioned in the paper.
-    They are used to compute tue outputs xi_j of the comparison network.
+    They are used to compute the outputs xi_j of the comparison network.
     Note that W and b (to be used in the objective function) are returned in torch
     while W_1 and b_1 (to be used in the constraints) are returned in numpy.
     """
@@ -159,16 +159,17 @@ def objective_coeff(compnet, sample):
     W = target_net[-1].weight.data
     b = target_net[-1].bias.data
 
-    # W = W.detach().cpu().numpy().astype(np.float64) # to numpy
-    # b = b.detach().cpu().numpy().astype(np.float64) # to numpy
+    if mode == "np":
+        W = W.detach().cpu().numpy().astype(np.float64) # to numpy
+        b = b.detach().cpu().numpy().astype(np.float64) # to numpy
 
     half = W.shape[0] //2       # total output size (e.g., 20)
 
-    W_1 = W[:half, :].numpy()   # first half weights / to numpy for 'minimize'
-    # W_2 = W[half:, :]         # second half weights
+    W_1 = W[:half, :].numpy() if mode != "np" else W[:half, :]  # first half weights for 'constraint_xi_0'
+    # W_2 = W[half:, :]           # second half weights
 
-    b_1 = b[:half].numpy()      # first half biases / to numpy for 'minimize'
-    # b_2 = b[half:]            # second half biases
+    b_1 = b[:half].numpy() if mode != "np" else b[:half]        # first half biases for 'constraint_xi_0'
+    # b_2 = b[half:]              # second half biases
 
     return W, b, W_1, b_1
 
@@ -236,53 +237,89 @@ def constraints_coeff(compnet, sample):
 # --------- #
 
 
-# def objective_fn(x, W, b, loss_fn="cross-entropy"):
-#     """Compute non-linear objective function: Eq. (7) in short document."""
+def objective_fn_np(x, W, b, loss_fn="cross-entropy"):
+    """Compute non-linear objective function in numpy: Eq. (7) in short document."""
 
-#     # Perform matrix-vector multiplication (send sample to squeeze network)
-#     logits_all = W @ x + b
-#     nb_classes = len(logits_all) // 2
-#     logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:] 
+    # Perform matrix-vector multiplication (send sample to squeeze network)
+    logits_all = W @ x + b
+    nb_classes = len(logits_all) // 2
+    logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:] 
 
-#     # Compute objective as function of the inputs x_i's
-#     # Add "minus" sign for minimization instead of maximization
-#     objective = -compute_loss(logits_1, logits_2, loss_fn=loss_fn)
+    # Compute objective as function of the inputs x_i's
+    # Add "minus" sign for minimization instead of maximization
+    objective = -compute_loss(logits_1, logits_2, loss_fn=loss_fn)
 
-#     return objective
+    return objective
 
 
-def objective_fn_torch(x_np, W, b, loss_fn="cross-entropy"):
-    """Torch-compatible objective function for use with SciPy."""
-    # Ensure x is a differentiable tensor
-    x_torch = torch.tensor(x_np, dtype=torch.float64, requires_grad=True)
+def grad_fn_np(x, WW, bb, loss_fn="cross-entropy"):
+    """
+    Analytic computation of gradient in numpy. To be used in conjuntion with objective_fn_np.
+    `loss_fn` param mandatory for consistency reasons, although not used.
+    """
+    x = x.reshape(-1, 1)
 
-    # If W or b are already torch tensors, skip re-wrapping
-    if not torch.is_tensor(W):
-        W = torch.tensor(W, dtype=torch.float32)
-    if not torch.is_tensor(b):
-        b = torch.tensor(b, dtype=torch.float32)
+    half = WW.shape[0] // 2 # total output size (e.g., 20)
+    W = WW[:half, :]
+    W_tilde = WW[half:, :]
+    b = bb[:half]
+    b_tilde = bb[half:]
 
     # Forward pass
-    logits_all = W @ x_torch + b
-    nb_classes = logits_all.shape[0] // 2
-    logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:]
+    xi = W @ x + b.reshape(-1, 1)           # shape: (C, 1)
+    xi_tilde = W_tilde @ x + b_tilde.reshape(-1, 1)
 
-    # Loss and backward
-    loss = compute_loss_torch(logits_1, logits_2, loss_fn)
-    obj = -loss
-    obj.backward()
+    y = softmax(xi, axis=0)                # shape: (C, 1)
+    y_tilde = softmax(xi_tilde, axis=0)
 
-    return obj.item(), x_torch.grad.detach().numpy()
+    # Grad of log(softmax): shape (C, D)
+    grad_log_y_tilde = W_tilde - (y_tilde.T @ W_tilde) # XXX MY FIX HERE: .T added to y_tilde
+
+    # Grad of y_k: softmax jacobian times W
+    softmax_jacobian = np.diagflat(y) - y @ y.T
+    grad_y_log_y_tilde = softmax_jacobian @ np.log(y_tilde + 1e-12)
+    grad_part_1 = grad_y_log_y_tilde.T @ W  # shape (1, D)
+
+    # Grad part 2
+    grad_part_2 = (y.T @ grad_log_y_tilde)  # shape: (1, D)
+
+    gradient = (grad_part_1 + grad_part_2).squeeze()
+
+    return gradient  # shape: (D,)
 
 
-def objective_fn(x, W, b, loss_fn="cross-entropy"):
-    obj, _ = objective_fn_torch(x, W, b, loss_fn)
-    return obj
+# def objective_fn_torch(x_np, W, b, loss_fn="cross-entropy"):
+#     """Torch-compatible objective function for use with SciPy."""
+#     # Ensure x is a differentiable tensor
+#     x_torch = torch.tensor(x_np, dtype=torch.float64, requires_grad=True)
+
+#     # If W or b are already torch tensors, skip re-wrapping
+#     if not torch.is_tensor(W):
+#         W = torch.tensor(W, dtype=torch.float32)
+#     if not torch.is_tensor(b):
+#         b = torch.tensor(b, dtype=torch.float32)
+
+#     # Forward pass
+#     logits_all = W @ x_torch + b
+#     nb_classes = logits_all.shape[0] // 2
+#     logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:]
+
+#     # Loss and backward
+#     loss = compute_loss_torch(logits_1, logits_2, loss_fn)
+#     obj = -loss
+#     obj.backward()
+
+#     return obj.item(), x_torch.grad.detach().numpy()
 
 
-def grad_fn(x, W, b, loss_fn="cross-entropy"):
-    _, grad = objective_fn_torch(x, W, b, loss_fn)
-    return grad
+# def objective_fn(x, W, b, loss_fn="cross-entropy"):
+#     obj, _ = objective_fn_torch(x, W, b, loss_fn)
+#     return obj
+
+
+# def grad_fn(x, W, b, loss_fn="cross-entropy"):
+#     _, grad = objective_fn_torch(x, W, b, loss_fn)
+#     return grad
 
 
 
@@ -318,7 +355,6 @@ def constraints_xj_s(x, A_reduced, bounds):
         List[dict]: List of constraint dictionaries.
     """
     return A_reduced @ x - bounds
-
 
 
 
@@ -365,7 +401,7 @@ if __name__ == "__main__":
     # 3. Solving the NLP
     # (i) Compute coefficients of the NLP
     p = 0.75
-    W, b, W_1, b_1 = objective_coeff(compnet, sample)
+    W, b, W_1, b_1 = objective_coeff(compnet, sample, mode="np")
     A_reduced, bounds = constraints_coeff(compnet, sample)
 
     # (ii) Wrap the constraint in dict form for minimize()
@@ -376,19 +412,18 @@ if __name__ == "__main__":
 
     input_bounds = Bounds([0]*W.shape[1], [1]*W.shape[1])  # inputs satisfy 0 ≤ x[i] ≤ 1
 
-    # (iii) Initial guess (same dimension as input x)
-    x0 = np.ones(W_1.shape[1]).astype(np.float64)
+    # (iii) Initial guess: sample itself
+    # x0 = np.ones(W_1.shape[1]).astype(np.float64)
+    x0 = sample.flatten().cpu().numpy()
     
     # (iv) Run the minimization
-    
-    
-    # # XXX to be moved...
 
+    # # XXX to be moved...
     method = 'trust-constr'  # Solver: 'trust-constr' (better but slower) or 'SLSQP'
 
     options = {
-        'maxiter': 10,
-        'disp': True
+        'maxiter': 5,
+        'disp': True,
     }
 
     if method == 'trust-constr':
@@ -404,15 +439,17 @@ if __name__ == "__main__":
 
     # check gradients
     if MODE == "debug":
-        err = check_grad(objective_fn, grad_fn, x0, W, b, "cross-entropy")
+        # pass
+        err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
         print("Gradient check error:", err)
 
     res = minimize(
-                objective_fn, x0, args=(W, b, "cross-entropy"), # objective
-                jac=grad_fn,                # gradients: doesn't seem to accelerate...
+                objective_fn_np, x0, args=(W, b, "cross-entropy"), # objective
+                jac=grad_fn_np,                # gradients: doesn't seem to accelerate...
                 bounds=input_bounds,        # bounds 
                 constraints=constraints,    # contraints
                 method=method,
+                # hess=BFGS(), # '2-point', SR1(), BFGS()
                 options=options, 
                 callback=callback_fn
                 )
@@ -432,7 +469,7 @@ if __name__ == "__main__":
         
         # Error: mehtod 1 (minus sign √)
         x = sample.flatten().detach().cpu().numpy().astype(np.float64) # XXX Just for testing!
-        objective_value = -objective_fn(x, W, b, loss_fn="cross-entropy") # (minus) objective value at the sample <=> error
+        objective_value = -objective_fn_np(x, W, b, loss_fn="cross-entropy") # (minus) objective value at the sample <=> error
         print("Objective value:", objective_value)
         
         # Error: mehtod 2 (minus sign √)
