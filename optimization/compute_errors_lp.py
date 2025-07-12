@@ -97,7 +97,7 @@ def check_saturations(net, input_1, input_2, verbose=False):
 
 
 
-def compute_errors_lp(model_name, start, end, bits, outputdir, device): 
+def compute_errors_lp(model_name, start, end, bits, output_dir, device): 
     
     NETWORK=f"checkpoints/{model_name}"
     MODEL = SmallDenseNet 
@@ -167,7 +167,7 @@ def compute_errors_lp(model_name, start, end, bits, outputdir, device):
             print("Optimisation FAILED!")
             # pass
         
-        with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
+        with open(f"{output_dir}/results_{start}_{end}.csv", "a") as f:
             print(f"{real_error:.6f},{computed_error:.6f},{-err:.6f}", file=f)
         #np.save(f"{RESULT_PATH}/{i}.npy", np.array(x[1:], dtype=np.float64))
         #np.save(f"{RESULT_PATH}/{i}_orig.npy", inputs.cpu().numpy())
@@ -198,6 +198,6 @@ if __name__ == "__main__":
         start=start,
         end=end,
         bits=bits,
-        outputdir=output_dir,
+        output_dir=output_dir,
         device=DEVICE
     )

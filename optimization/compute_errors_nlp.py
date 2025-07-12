@@ -17,7 +17,7 @@ from preprocessing import LossHead, create_comparing_network, eval_one_sample
 from utils.network import load_network, SmallConvNet, SmallDenseNet
 from utils.dataset import create_dataset
 from linear_utils import create_c, create_upper_bounds, optimize
-from nonlinear_utils import * # my imports for now...
+from nonlinear_utils import *
 from linear_utils import TOL, TOL2
 
 
@@ -98,134 +98,161 @@ def check_saturations(net, input_1, input_2, verbose=False):
         print("********************")
 
 
-
-# *** WORK ON THIS NOW *** # XXX
-def compute_errors_nlp(model_name, start, end, bits, outputdir, device): 
-    
-    NETWORK=f"checkpoints/{model_name}"
-    MODEL = SmallDenseNet 
-    LAYERS = 4
-    INPUT_SIZE = (1, 28, 28) 
-    N = 1 * 28 * 28 
-
-    net = load_network(MODEL, NETWORK, device=device)
-    net_approx = load_network(MODEL, NETWORK, device=device)
-
-    # NOTE: net_approx is modified here (not obvious, but after investgation)!!!
-    compnet = create_comparing_network(net, net_approx, bits=bits, skip_magic=True) # XXX was skip_magic=False before
-    ce_head = LossHead(compnet)
-
-    test_dataset = create_dataset(mode="experiment")
-    subset_dataset = Subset(test_dataset, list(range(start, end)))
-
-    for sample, _ in tqdm(subset_dataset, desc="Processing"):
-
-        sample = sample.to(device).double()
+# --------------------- #
+# Optimization function #
+# --------------------- #
 
 
-        # XXX
-        out_1 = net(sample)
-        out_2 = net_approx(sample)
-        out_3 = compnet(sample)
-        print("out_3", out_3, out_3.shape)
-
-        # real_error = -(softmax_out_1 * torch.log(softmax_out_2)).sum().item()
-        real_error = -(F.softmax(out_1, dim=1) * F.log_softmax(out_2, dim=1)).sum().item()
-        computed_error = ce_head(sample).item()
-        print("Error:", real_error, computed_error)
-        assert abs(real_error - computed_error) < TOL
-
-        # Objective function
-        # min c @ x
-        c = -1*create_c(compnet, sample)
-        # XXX
-
-
-
-        # Inequality constraints
-        # A_ub @ x <= b_ub
-        A_ub, b_ub = create_upper_bounds(compnet, sample)
-        #b_ub = torch.zeros((A_ub.shape[0],), dtype=torch.float64)
-        #b_ub = torch.full((A_ub.shape[0],), -TOL, dtype=torch.float64)
+def compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints="all", 
+                      device="cpu", verbose=False):
         
-        # Equality constraints (not in the paper) capturing the constant part of the LP, i.e., y_0 = 1
-        # A_eq @ x == b_eq 
-        A_eq = torch.zeros((1, N+1)).double()
-        A_eq[0, 0] = 1.0
-        b_eq = torch.zeros((1,)).double()
-        b_eq[0] = 1.0                    
+        NETWORK = os.path.join("checkpoints", model_name)
+        MODEL = SmallDenseNet 
+        # LAYERS = 4
+        # INPUT_SIZE = (1, 28, 28) 
+        # N = 1 * 28 * 28 
 
-        # l <= x <= u 
-        l = -0.5
-        u = 3.0
+        # Compute comparing network
+        net = load_network(MODEL, NETWORK, device=device)
+        net_approx = load_network(MODEL, NETWORK, device=device)
+        compnet = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
 
-        res = optimize(c, A_ub, b_ub, A_eq, b_eq, l, u)
-        err = res.fun # Error computed by the LP
-        x = res.x     # Solution of the LP
+        test_dataset = create_dataset(mode="experiment")
+        subset_dataset = Subset(test_dataset, list(range(start, end)))
 
-        assert np.isclose(x[0], 1.0)
+        for sample, _ in tqdm(subset_dataset, desc="Processing"):
 
-        # y is the LP solution, i.e., the input in the saturation polytope yielding a maximal error
-        y = torch.tensor(x[1:], dtype=torch.float64).reshape(1, -1).to(device)
-        err_by_net = compnet(y).item()                                            # Error computed by compnet, i.e., |N(x) - Ñ(x)|
-        err_by_sol = (c @ torch.tensor(x, dtype=torch.float64).to(device)).item() # Error computed by the LP (should be err)
+            sample = sample.to(device).double()
 
-        try: 
-            assert np.isclose(-err, err_by_net) # sanity check
-            assert np.isclose(err, err_by_sol)  # sanity check
+            # Start timer
+            start_time = time.time()
             
-            # Check inequality constraints for both the data sample and the LP sol
-            check_upper_bounds(A_ub, b_ub, sample, x[1:])
-            # Check that the data sample and the associated LP sol yield same saturations
-            check_saturations(net, sample, x[1:])
-        except AssertionError:
-            print("Optimisation FAILED!")
-            # pass
-        
-        with open(f"{outputdir}/results_{start}_{end}.csv", "a") as f:
-            print(f"{real_error:.6f},{computed_error:.6f},{-err:.6f}", file=f)
-        #np.save(f"{RESULT_PATH}/{i}.npy", np.array(x[1:], dtype=np.float64))
-        #np.save(f"{RESULT_PATH}/{i}_orig.npy", inputs.cpu().numpy())
+            # 2. Solve the NLP
+            # (i) Compute coefficients of the NLP
+            p = 0.75
+            W, b, W_1, b_1 = objective_coeff(compnet, sample, mode="np")
+            A_reduced, bounds = constraints_coeff(compnet, sample)
+            if nb_constraints != "all":
+                A_reduced = A_reduced[:nb_constraints]
+                bounds = bounds[:nb_constraints]
+
+            # (ii) Wrap the constraint in dict form for minimize()
+            constraints = [
+                {
+                'type': 'ineq', 
+                'fun': constraint_xi_0,
+                'jac' : jac_constraint_xi_0, # provide analytic Jacobian
+                'args': (W_1, b_1, p)
+                },
+                {
+                'type': 'ineq', 
+                'fun': constraints_xj_s, 
+                'jac': jac_constraints_xj_s, # provide analytic Jacobian
+                'args': (A_reduced, bounds)
+                }
+                        ]
+
+            input_bounds = Bounds([0]*W.shape[1], [1]*W.shape[1])  # inputs satisfy 0 ≤ x[i] ≤ 1
+
+            # (iii) Initial guess: sample itself
+            x0 = sample.flatten().cpu().numpy()
+            
+            # (iv) Run minimization
+            method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
+
+            options = {
+                'maxiter': 3000,
+                'disp': True,
+                'sparse_jacobian' : True, # improves a lot!
+                'xtol' : 1e-5
+                # 'gtol': 1e-6,           # Gradient norm tolerance
+            }
+
+            iteration = [0]
+
+            def callback_fn(xk, state=None):
+                iteration[0] += 1
+                if verbose:
+                    print(".", end="", flush=True)
+
+            res = minimize(
+                        objective_fn_np, x0, args=(W, b, "cross-entropy"), # objective
+                        jac=grad_fn_np,             # gradients: (better without??? not clear...)
+                        bounds=input_bounds,        # bounds 
+                        constraints=constraints,    # contraints
+                        method=method,
+                        # hess=lambda x, *args: np.zeros((len(x), len(x))),
+                        options=options,
+                        callback=callback_fn
+                        )
+            
+            # Error: mehtod 1 (minus sign √)
+            objective_value = -objective_fn_np(x0, W, b, loss_fn="cross-entropy")
+
+            # Error: mehtod 2 (minus sign √)
+            logits_1 = net(sample)
+            logits_2 = net_approx(sample)
+            real_error = -(F.softmax(logits_1, dim=1) * F.log_softmax(logits_2, dim=1)).sum().item()
+
+            # Error: mehtod 3 (minus sign √)
+            compnet_with_loss_head = LossHead(compnet, loss_fn="cross-entropy")
+            computed_error = compnet_with_loss_head(sample).item()
+
+            # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
+            with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+                print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}", file=f)
+
+            if verbose:
+                print("res:", res)
+                print("Objective value:", res.fun)
+                print("Xi_0 constraint value (>= 0):", constraint_xi_0(res.x, W_1, b_1, p))
+                print("Xi_j constraints values (>= 0):", constraints_xj_s(res.x, A_reduced, bounds))
+                # End timer
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                print(f"\nOptimization time {elapsed_time:.4f} seconds")
+                
+                print("\nErrors\n------")
+                # check gradient
+                grad_err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
+                print("Gradient error:", grad_err)
+
+                # check jacobians
+                def wrapper_1(x):
+                    return constraint_xi_0(x, W_1, b_1, p=0.85)
+                def wrapper_2(x):
+                    return constraints_xj_s(x, A_reduced, bounds)
+                
+                J_numeric_1 = approx_derivative(wrapper_1, x0)
+                J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.85)
+                print("Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
+
+                J_numeric_2 = approx_derivative(wrapper_2, x0)
+                J_analytic_2 = jac_constraints_xj_s(x0, A_reduced, bounds)
+                print("Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
+
+                print("\nSanity checks\n-------------")
+            
+                # Checks
+                print("Errors:", real_error, computed_error, objective_value)
+                assert abs(real_error - computed_error) < TOL
+                assert abs(computed_error - objective_value) < TOL
+                assert abs(objective_value - real_error) < TOL
 
 
 if __name__ == "__main__":
 
-    # # test_squeeze() # 1.
-    # # test_compnet() # 2.
-    # # test_squeezed_compnet() # 3.
-    
-    # # *** BEGINNING *** # (uncomment below once finished) XXX
-    # config = parse_config()
-    
-    # DEVICE = config.get("device", "cpu")
-    # print(f"Using device: {DEVICE}\n")
+    config = parse_config()
 
-    # model_name = config["model_name"]
-    # start = config["start"]
-    # end = config["end"]
-    # bits = config["bits"]
-    # output_dir = config["output_dir"]
+    DEVICE = config.get("device", "cpu")
+    print(f"Using device: {DEVICE}\n")
 
-    # # Create output directory if needed
-    # os.makedirs(output_dir, exist_ok=True)
-
-    # compute_errors_nlp(
-    #     model_name=model_name,
-    #     start=start,
-    #     end=end,
-    #     bits=bits,
-    #     outputdir=output_dir,
-    #     device=DEVICE
-    # )
-    # # *** END *** # XXX
-
-
-# *** FOR TESTING *** # XXX
-    compute_errors_nlp(
-        model_name="mnist_smalldensenet_1024_2.pt",
-        start=0,
-        end=2,
-        bits=16,
-        outputdir="results",
-        device="cpu"
-    )
+    model_name = config["model_name"]
+    start = config["start"]
+    end = config["end"]
+    bits = config["bits"]
+    output_dir = config["output_dir"]
+        
+    # compute error
+    compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints=20, 
+                      device=DEVICE, verbose=True)

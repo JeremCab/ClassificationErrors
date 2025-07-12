@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision.datasets import MNIST
 import torchvision.transforms as transforms
@@ -52,6 +53,8 @@ def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./da
     Returns:
         tuple: (train_loader, val_loader, test_loader, dataset_name)
     """
+    generator = torch.Generator().manual_seed(42)
+
     dataset_name = "mnist"
 
     transform = transforms.Compose([
@@ -67,7 +70,7 @@ def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./da
     total_train = len(full_train_dataset)
     val_size = int(total_train * val_split)
     train_size = total_train - val_size
-    train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
+    train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size], generator=generator)
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
