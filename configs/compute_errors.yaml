@@ -2,7 +2,7 @@
 device: "cpu" # this part is on cpu for the moment...
 optimization: "non-linear"  # "linear", "non-linear"
 model_name: mnist_smalldensenet_1024_2.pt
-start: 0
-end: 2
+start: 1154
+end: 1155
 bits: 16
 output_dir: results

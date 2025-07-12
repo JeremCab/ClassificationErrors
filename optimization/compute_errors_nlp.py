@@ -161,11 +161,11 @@ def compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints="
             method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
 
             options = {
-                'maxiter': 3000,
+                'maxiter': 5000,
                 'disp': True,
                 'sparse_jacobian' : True, # improves a lot!
-                'xtol' : 1e-5
-                # 'gtol': 1e-6,           # Gradient norm tolerance
+                'xtol' : 1e-5,
+                'gtol': 1e-5,           # Gradient norm tolerance
             }
 
             iteration = [0]
@@ -254,5 +254,5 @@ if __name__ == "__main__":
     output_dir = config["output_dir"]
         
     # compute error
-    compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints=20, 
+    compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints=200, 
                       device=DEVICE, verbose=True)
