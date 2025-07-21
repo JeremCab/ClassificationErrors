@@ -1,8 +1,8 @@
 import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 from quant_utils import lower_precision
 
@@ -22,8 +22,6 @@ def eval_one_sample(net, sample):
         if isinstance(layer, nn.ReLU):
             saturations.append(outputs != 0)
     return saturations
-
-
 
 def prune_network(net, saturations):
     """Creates a new network that is equivalent with the given net on the assumption that saturations are fixed. 
@@ -100,7 +98,7 @@ def squeeze_network(net):
 
     # get rid of ReLU (network already pruned)
     layers = [l for l in layers if not isinstance(l, nn.ReLU)]
-    # we  do not need dropout (only eval mode)
+    # we do not need dropout (only eval mode)
     layers = [l for l in layers if not isinstance(l, nn.Dropout)]
 
     # check that all layers are linear (first can be flatten)

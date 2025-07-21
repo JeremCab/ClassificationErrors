@@ -4,6 +4,9 @@ import os
 from tqdm import tqdm
 import argparse
 import yaml
+
+import copy
+
 import numpy as np
 
 import torch
@@ -98,151 +101,264 @@ def check_saturations(net, input_1, input_2, verbose=False):
         print("********************")
 
 
-# --------------------- #
-# Optimization function #
-# --------------------- #
+# ---------------------- #
+# Optimization functions #
+# ---------------------- #
 
+# Scipy #
 
-def compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints="all", 
-                      device="cpu", verbose=False):
+def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, 
+                        nb_constraints="all", start=0, end=1, device="cpu", verbose=False):
+                
+        net = copy.deepcopy(net)                # deep copy for safety reasons
+        net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
+        comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
+
+        sample = sample.to(device).double()
+
+        # Start timer
+        start_time = time.time()
         
-        NETWORK = os.path.join("checkpoints", model_name)
-        MODEL = SmallDenseNet 
-        # LAYERS = 4
-        # INPUT_SIZE = (1, 28, 28) 
-        # N = 1 * 28 * 28 
+        # 2. Solve the NLP
+        # (i) Compute coefficients of the NLP
+        p = 0.7
+        W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
+        A_reduced, bounds = constraints_coeff(comp_net, sample)
+        if nb_constraints != "all":
+            A_reduced = A_reduced[:nb_constraints]
+            bounds = bounds[:nb_constraints]
 
-        # Compute comparing network
-        net = load_network(MODEL, NETWORK, device=device)
-        net_approx = load_network(MODEL, NETWORK, device=device)
-        compnet = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
-
-        test_dataset = create_dataset(mode="experiment")
-        subset_dataset = Subset(test_dataset, list(range(start, end)))
-
-        for sample, _ in tqdm(subset_dataset, desc="Processing"):
-
-            sample = sample.to(device).double()
-
-            # Start timer
-            start_time = time.time()
-            
-            # 2. Solve the NLP
-            # (i) Compute coefficients of the NLP
-            p = 0.75
-            W, b, W_1, b_1 = objective_coeff(compnet, sample, mode="np")
-            A_reduced, bounds = constraints_coeff(compnet, sample)
-            if nb_constraints != "all":
-                A_reduced = A_reduced[:nb_constraints]
-                bounds = bounds[:nb_constraints]
-
-            # (ii) Wrap the constraint in dict form for minimize()
-            constraints = [
-                {
-                'type': 'ineq', 
-                'fun': constraint_xi_0,
-                'jac' : jac_constraint_xi_0, # provide analytic Jacobian
-                'args': (W_1, b_1, p)
-                },
-                {
-                'type': 'ineq', 
-                'fun': constraints_xj_s, 
-                'jac': jac_constraints_xj_s, # provide analytic Jacobian
-                'args': (A_reduced, bounds)
-                }
-                        ]
-
-            input_bounds = Bounds([0]*W.shape[1], [1]*W.shape[1])  # inputs satisfy 0 ≤ x[i] ≤ 1
-
-            # (iii) Initial guess: sample itself
-            x0 = sample.flatten().cpu().numpy()
-            
-            # (iv) Run minimization
-            method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
-
-            options = {
-                'maxiter': 5000,
-                'disp': True,
-                'sparse_jacobian' : True, # improves a lot!
-                'xtol' : 1e-5,
-                'gtol': 1e-5,           # Gradient norm tolerance
+        # (ii) Wrap the constraint in dict form for minimize()
+        constraints = [
+            {
+            'type': 'ineq', 
+            'fun': constraint_xi_0,
+            'jac' : jac_constraint_xi_0, # provide analytic Jacobian
+            'args': (W_1, b_1, p)
+            },
+            {
+            'type': 'ineq', 
+            'fun': constraints_xj_s, 
+            'jac': jac_constraints_xj_s, # provide analytic Jacobian
+            'args': (A_reduced, bounds)
             }
+                    ]
 
-            iteration = [0]
+        # Safe lower and upper bounds after dataset transformation: [-0.5, 2.9]
+        input_bounds = Bounds([-0.5]*W.shape[1], [2.9]*W.shape[1])
 
-            def callback_fn(xk, state=None):
-                iteration[0] += 1
-                if verbose:
-                    print(".", end="", flush=True)
+        # (iii) Initial guess: sample itself
+        x0 = sample.flatten().cpu().numpy()
 
-            res = minimize(
-                        objective_fn_np, x0, args=(W, b, "cross-entropy"), # objective
-                        jac=grad_fn_np,             # gradients: (better without??? not clear...)
-                        bounds=input_bounds,        # bounds 
-                        constraints=constraints,    # contraints
-                        method=method,
-                        # hess=lambda x, *args: np.zeros((len(x), len(x))),
-                        options=options,
-                        callback=callback_fn
-                        )
-            
-            # Error: mehtod 1 (minus sign √)
-            objective_value = -objective_fn_np(x0, W, b, loss_fn="cross-entropy")
+        if verbose:
+            print("Checking contraints at x0:")
+            xi_0 = constraint_xi_0(x0, W_1, b_1, p=0.7)
+            print("Constraint xi_0 ≥ 0:\t", xi_0 >= 0)
+            xi_js = constraints_xj_s(x0, A_reduced, bounds)
+            print("Constraints xi_j's ≥ 0:\t", (xi_js >= 0).all())
+        
+        # (iv) Run minimization
+        method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
 
-            # Error: mehtod 2 (minus sign √)
-            logits_1 = net(sample)
-            logits_2 = net_approx(sample)
-            real_error = -(F.softmax(logits_1, dim=1) * F.log_softmax(logits_2, dim=1)).sum().item()
+        options = {
+            'maxiter': 10000,
+            'disp': True,
+            'sparse_jacobian' : True, # improves a lot!
+            'xtol' : 1e-6,
+            'gtol': 1e-6,           # Gradient norm tolerance
+        }
 
-            # Error: mehtod 3 (minus sign √)
-            compnet_with_loss_head = LossHead(compnet, loss_fn="cross-entropy")
-            computed_error = compnet_with_loss_head(sample).item()
+        iteration = [0]
 
-            # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
-            with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
-                print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}", file=f)
-
+        def callback_fn(xk, state=None):
+            iteration[0] += 1
             if verbose:
-                print("res:", res)
-                print("Objective value:", res.fun)
-                print("Xi_0 constraint value (>= 0):", constraint_xi_0(res.x, W_1, b_1, p))
-                print("Xi_j constraints values (>= 0):", constraints_xj_s(res.x, A_reduced, bounds))
-                # End timer
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-                print(f"\nOptimization time {elapsed_time:.4f} seconds")
-                
-                print("\nErrors\n------")
-                # check gradient
-                grad_err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
-                print("Gradient error:", grad_err)
+                print(".", end="", flush=True)
 
-                # check jacobians
-                def wrapper_1(x):
-                    return constraint_xi_0(x, W_1, b_1, p=0.85)
-                def wrapper_2(x):
-                    return constraints_xj_s(x, A_reduced, bounds)
-                
-                J_numeric_1 = approx_derivative(wrapper_1, x0)
-                J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.85)
-                print("Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
+        res = minimize(
+                    objective_fn_np, x0, args=(W, b, "cross-entropy"), # objective
+                    jac=grad_fn_np,             # gradients: (better without??? not clear...)
+                    bounds=input_bounds,        # bounds 
+                    constraints=constraints,    # contraints
+                    method=method,
+                    # hess=lambda x, *args: np.zeros((len(x), len(x))),
+                    options=options,
+                    callback=callback_fn
+                    )
+        
+        # Compute sample error (3 methods)
+        objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
+                                                                        W, b, loss_fn="cross-entropy")
 
-                J_numeric_2 = approx_derivative(wrapper_2, x0)
-                J_analytic_2 = jac_constraints_xj_s(x0, A_reduced, bounds)
-                print("Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
+        # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
+        with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+            f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}\n")
 
-                print("\nSanity checks\n-------------")
+        if verbose:
             
-                # Checks
-                print("Errors:", real_error, computed_error, objective_value)
-                assert abs(real_error - computed_error) < TOL
-                assert abs(computed_error - objective_value) < TOL
-                assert abs(objective_value - real_error) < TOL
+            # Checks
+            print("🔍 Errors:", real_error, computed_error, objective_value)
+            assert abs(real_error - computed_error) < TOL
+            assert abs(computed_error - objective_value) < TOL
+            assert abs(objective_value - real_error) < TOL
+            print("✅ Errors' consistency check passed.\n")
+
+            print("✅ Objective value:", res.fun)
+            print("✅ Optimal solution:", res.x.shape)
+            sol = x0.reshape(28, 28)        # XXX
+            import matplotlib.pyplot as plt # XXX
+            plt.imshow(sol)                 # XXX
+            plt.show()                      # XXX
+            sol = res.x.reshape(28, 28)     # XXX
+            import matplotlib.pyplot as plt # XXX
+            plt.imshow(sol)                 # XXX
+            plt.show()                      # XXX
+            xl, xu = -0.5, 2.9
+            inside_bounds = np.all(x0 >= xl) and np.all(x0 <= xu)
+            constraints_satisfied_1 = (constraint_xi_0(x0, W_1, b_1, p) >= 0)
+            constraints_satisfied_2 = (constraints_xj_s(x0, A_reduced, bounds) >= 0).all()
+            constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
+            print(f"🔍 x0 inside variable bounds:\t\t {inside_bounds}")
+            print(f"🔍 Constraints satisfied at x0:\t\t {constraints_satisfied}")
+            assert inside_bounds and constraints_satisfied , "❌ Constraints falied at x0!"
+            print("✅ Constraints and bounds checks passed.")
+
+            inside_bounds = np.all(res.x >= xl) and np.all(res.x <= xu)
+            constraints_satisfied_1 = (constraint_xi_0(res.x, W_1, b_1, p) >= 0)
+            constraints_satisfied_2 = (constraints_xj_s(res.x, A_reduced, bounds) >= 0).all()
+            constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
+            print(f"🔍 Sol. inside variable bounds:\t\t {inside_bounds}")
+            print(f"🔍 Constraints satisfied at sol:\t {constraints_satisfied}")
+            assert inside_bounds and constraints_satisfied , "❌ Constraints falied at sol!"
+            print("✅ Constraints and bounds checks passed.")
+
+            # End timer
+            end_time = time.time()
+            elapsed_time = end_time - start_time    
+            print(f"\nOptimization time {elapsed_time:.4f} seconds")
+            
+            print("\nErrors\n------")
+            # check gradient
+            grad_err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
+            print("Gradient error:", grad_err)
+
+            # check jacobians
+            def wrapper_1(x):
+                return constraint_xi_0(x, W_1, b_1, p=0.7)
+            def wrapper_2(x):
+                return constraints_xj_s(x, A_reduced, bounds)
+            
+            J_numeric_1 = approx_derivative(wrapper_1, x0)
+            J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.7)
+            print("Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
+
+            J_numeric_2 = approx_derivative(wrapper_2, x0)
+            J_analytic_2 = jac_constraints_xj_s(x0, A_reduced, bounds)
+            print("Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
+
+            print("\nSanity checks\n-------------")
+
+
+# IPOPT #
+
+
+def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, 
+                        nb_constraints="all", start=0, end=1, device="cpu", verbose=False):
+
+    net = copy.deepcopy(net)                # deep copy for safety reasons
+    net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
+    comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
+
+    sample = sample.to(device).double()
+
+    # Start timer
+    start_time = time.time()
+    
+    # 2. Solve the NLP
+    # (i) Compute coefficients of the NLP
+    p = 0.7
+    W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
+    A_reduced, bounds = constraints_coeff(comp_net, sample)
+    if nb_constraints != "all":
+        A_reduced = A_reduced[:nb_constraints]
+        bounds = bounds[:nb_constraints]
+
+    # Initial guess: sample itself
+    x0 = sample.flatten().cpu().numpy()
+
+    m = A_reduced.shape[0] + 1
+    n = A_reduced.shape[1]
+
+    # Safe lower and upper bounds after dataset transformation: [-0.5, 2.9]
+    xl = np.ones(n, dtype=np.float64)*(-0.5)
+    xu = np.ones(n, dtype=np.float64)*2.9
+
+    # Constraints' bounds: [0, ∞)
+    cl = np.concatenate([np.zeros(m - 1), [0.0]])
+    cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
+    
+    problem_obj = ToyProblem(W, b, W_1, b_1, A_reduced, bounds)
+
+    nlp = cyipopt.Problem(
+            n=n,    # nb of variables
+            m=m,    # nb of constraints
+            lb=xl,  # lower bounds
+            ub=xu,  # upper bounds
+            cl=cl,  # constraints lower bounds
+            cu=cu,  # constraints upper bounds
+            problem_obj=problem_obj
+        )
+
+    print_level = 5 if verbose==True else 1
+    nlp.add_option("print_level", print_level)
+    nlp.add_option("tol", 1e-6)
+    nlp.add_option("hessian_approximation", "limited-memory") # XXX
+    constr_tol = 1e-6
+    nlp.add_option("constr_viol_tol", constr_tol)
+
+    if verbose:
+
+        # Checks
+        check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
+        check_feasibility(problem_obj, x0, xl, xu, cl, cu, constr_tol, verbose)
+        check_objective_gradient(problem_obj, x0, verbose=verbose)
+        check_constraint_jacobian(problem_obj, x0, verbose=verbose)
+
+    solution, info = nlp.solve(x0) # solve problem
+
+    # Compute sample error (3 methods)
+    objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
+                                                                    W, b, loss_fn="cross-entropy")
+
+    # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
+    with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+        f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}\n")        
+
+    if verbose:
+        print("\nErrors at x0 (1,2,3) and maximal error (4)")
+        print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}")
+
+        print("\n✅ Optimal solution:", solution.shape)
+        print("Objective value:", info["obj_val"])
+        check_feasibility(problem_obj, solution, xl, xu, cl, cu, constr_tol)
+
+        check_objective_value(solution, -info["obj_val"], 
+                            net, net_approx, comp_net, 
+                            W, b, loss_fn="cross-entropy", verbose=True)
+        
+        check_predictions_consistency(x0, comp_net)
+        check_predictions_consistency(solution, comp_net)
+
 
 
 if __name__ == "__main__":
 
+    # Parameters
     config = parse_config()
+
+    method = config["method"]
+    print(f"Using  solver: {method}\n")
+    verbose = config["verbose"]
 
     DEVICE = config.get("device", "cpu")
     print(f"Using device: {DEVICE}\n")
@@ -253,6 +369,30 @@ if __name__ == "__main__":
     bits = config["bits"]
     output_dir = config["output_dir"]
         
-    # compute error
-    compute_error_nlp(model_name, bits, start, end, output_dir, nb_constraints=200, 
-                      device=DEVICE, verbose=True)
+    # Dataset
+    test_dataset = create_dataset(mode="experiment")
+    subset_dataset = Subset(test_dataset, list(range(start, end)))
+
+    # Networks
+    NETWORK = os.path.join("checkpoints", model_name)
+    MODEL = SmallDenseNet 
+    # LAYERS = 4
+    # INPUT_SIZE = (1, 28, 28) 
+    # N = 1 * 28 * 28 
+
+    net = load_network(MODEL, NETWORK, device=DEVICE)
+    net_approx = load_network(MODEL, NETWORK, device=DEVICE)
+    comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
+
+    # Compute errors
+    for sample, _ in tqdm(subset_dataset, desc="Processing"):
+
+        sample = sample.to(DEVICE).double()
+
+        if method == "scipy":
+            compute_error_scipy(net, net_approx, comp_net, sample, output_dir, 
+                                nb_constraints="all", start=start, end=end, device=DEVICE, verbose=verbose)
+        
+        elif method == "iüpopt":
+            compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, 
+                                nb_constraints="all", start=start, end=end, device=DEVICE, verbose=verbose)

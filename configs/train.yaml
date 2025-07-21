@@ -1,5 +1,5 @@
 # configs/train.yaml
 device: "cuda" # options: 'cuda', 'mps', 'cpu'
 batch_size: 1024
-num_epochs: 2
+num_epochs: 50
 checkpoint_dir: checkpoints

@@ -2,36 +2,40 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.dataset import create_dataset
-from utils.network import load_network, SmallConvNet, SmallDenseNet
-from preprocessing import LossHead, create_comparing_network, eval_one_sample
+import time
+from tqdm import tqdm
+
+import copy
+
+import numpy as np
+from scipy.sparse import vstack, csr_matrix
+from scipy.optimize import Bounds, linprog, minimize, check_grad, SR1, BFGS
+from scipy.optimize._numdiff import approx_derivative
+from scipy.sparse import csr_matrix, vstack, lil_matrix
+
+import cyipopt
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Subset
 
-import numpy as np
-
-from scipy.optimize import Bounds, linprog, minimize, check_grad, SR1, BFGS
-from scipy.optimize._numdiff import approx_derivative
-from scipy.sparse import csr_matrix
-
-import time
-
+from utils.dataset import create_dataset
+from utils.network import load_network, SmallConvNet, SmallDenseNet
+from preprocessing import LossHead, create_comparing_network, eval_one_sample
 from preprocessing import eval_one_sample, squeeze_network, prune_network, get_subnetwork, truncate_after_last_relu
 
 TOL = 1e-8   # almost 0: to check the bounds
 TOL2 = 1e-9  # almost 0: to check the bounds
 
-def create_c(compnet, inputs):
+def create_c(comp_net, inputs):
     assert inputs.shape[0] == 1 # one sample in a batch
 
     # wide_inputs = torch.hstack([inputs, inputs]) TODO: delete this line
 
-    # reduce and squeeze compnet 
-    saturations = eval_one_sample(compnet, inputs)
-    target_net = squeeze_network(prune_network(compnet, saturations))
+    # reduce and squeeze comp_net 
+    saturations = eval_one_sample(comp_net, inputs)
+    target_net = squeeze_network(prune_network(comp_net, saturations))
 
     W = target_net[-1].weight.data
     b = target_net[-1].bias.data
@@ -103,6 +107,159 @@ def optimize(c, A_ub, b_ub, A_eq, b_eq, l, u, verbose=False):
 # ************************** #
 
 
+# ---------------- #
+# Helper functions #
+# ---------------- #
+
+
+def compute_errors(net, net_approx, comp_net, 
+                    sample, W, b, loss_fn="cross-entropy"):
+    """
+    Compute the error between net and net_approx at sample x0 in 3 different ways:
+    (1) Objective value at x0
+    (2) Error between net and net_approx at x0
+    (3) Error computed by comp_net
+    """
+
+    # Mehtod 1 (minus sign √)
+    x0 = sample.flatten().cpu().numpy()
+    objective_value = -objective_fn_np(x0, W, b, loss_fn=loss_fn)
+
+    # Mehtod 2 (minus sign √)
+    logits_1 = net(sample)
+    logits_2 = net_approx(sample)
+    real_error = -(F.softmax(logits_1, dim=1) * F.log_softmax(logits_2, dim=1)).sum().item()
+
+    # Mehtod 3 (minus sign √)
+    comp_net_with_loss_head = LossHead(comp_net, loss_fn="cross-entropy")
+    computed_error = comp_net_with_loss_head(sample).item()
+
+    return objective_value, real_error, computed_error
+    
+
+def check_shapes_consistency(A, x0, cl, cu, xl, xu, verbose=True):
+    """
+    Checks the consistency of dimensions for the problem inputs.
+    """
+    m = len(cl)  # number of constraints including nonlinear
+    n = len(x0)
+
+    assert A.shape[0] + 1 == m, "Mismatch in number of constraints (A rows + 1 != m)"
+    assert A.shape[1] == n, "Mismatch in number of variables (A cols != n)"
+    assert len(x0) == n, "Initial guess size incorrect"
+    assert len(cl) == m and len(cu) == m, "Constraint bounds size incorrect"
+    assert xl.shape[0] == n and xu.shape[0] == n, "Variable bounds size incorrect"
+
+    if verbose:
+        print("✅ Shapes and sizes consistent.")
+
+
+def check_feasibility(problem, x0, xl, xu, cl, cu, constr_tol=1e-8, verbose=True):
+    """
+    Check if x is within variable bounds and satisfies constraints.
+    """
+    inside_bounds = np.all(x0 >= xl) and np.all(x0 <= xu)
+    c_val = problem.constraints(x0)
+    constraints_satisfied = np.all(c_val >= cl - constr_tol) and np.all(c_val <= cu) # tolerence 1e-8
+
+    assert inside_bounds , "❌ Constraints failed at x!"
+    assert constraints_satisfied , "❌ Constraints failed at x!"
+
+    if verbose:
+        print(f"\n🔍 x inside variable bounds:\t {inside_bounds}")
+        print("✅ Bounds checks passed.")
+
+        print(f"\n🔍 Constraints satisfied at x:\t {constraints_satisfied}")
+        print("✅ Constraints check passed.")
+
+
+def check_objective_gradient(problem, x0, tol=1e-4, eps=1e-6, verbose=True):
+    """
+    Check the gradient of the objective function via finite differences.
+    """
+    n = len(x0)
+    f0 = problem.objective(x0)
+
+    # Finite difference gradient
+    grad_fd = np.zeros(n)
+    for i in range(n):
+        x_eps = x0.copy()
+        x_eps[i] += eps
+        f_eps = problem.objective(x_eps)
+        grad_fd[i] = (f_eps - f0) / eps
+
+    grad_analytic = problem.gradient(x0)
+    max_diff = np.max(np.abs(grad_analytic - grad_fd))
+    assert max_diff < tol, f"❌ Gradient check failed! Max diff = {max_diff:.3e}"
+
+    if verbose:
+        print(f"\n🔍 Max difference between analytic and FD gradient: {max_diff:.3e}")
+        print("✅ Gradient check passed.")
+
+
+def check_constraint_jacobian(problem, x0, tol=1e-4, eps=1e-6, verbose=True):
+    """
+    Check the Jacobian of the constraint function via finite differences.
+    """
+    c0 = problem.constraints(x0)
+    m = len(c0)
+    n = len(x0)
+
+    # Finite difference Jacobian
+    jac_fd = np.zeros((m, n))
+    for i in range(n):
+        x_eps = x0.copy()
+        x_eps[i] += eps
+        c_eps = problem.constraints(x_eps)
+        jac_fd[:, i] = (c_eps - c0) / eps
+
+    # Analytical Jacobian from sparse representation
+    jac_sparse = problem.jacobian(x0)
+    jac_rows, jac_cols = problem.jacobianstructure()
+    jac_dense = np.zeros((m, n))
+    for val, r, c in zip(jac_sparse, jac_rows, jac_cols):
+        jac_dense[r, c] = val
+
+    # Compare
+    diff = np.abs(jac_dense - jac_fd)
+    max_diff = diff.max()
+    assert max_diff < tol, f"❌ Jacobian check failed! Max diff = {max_diff:.3e}"
+
+    if verbose:
+        print(f"\n🔍 Max difference between analytic and FD Jacobian: {max_diff:.3e}")
+        print("✅ Jacobian check passed.")
+
+
+def check_predictions_consistency(x0, comp_net, verbose=True):
+    """Check predictions of x0 predicted by the original and apporximated networks."""
+
+    pred = comp_net(torch.tensor(x0).reshape((1,-1))).reshape(-1)
+    half = len(pred) // 2
+    class_1 = torch.argmax(pred[:half]).item()
+    class_2 = torch.argmax(pred[half:]).item()
+    assert class_1 == class_2 , "❌ Constraints failed at x!"
+
+    if verbose:
+        print(f"\n🔍 Predictions of x by original and approximated nets:\t {class_1, class_1}")
+        print("✅ Predictions check passed.")
+
+
+def check_objective_value(solution, obj_value, net, net_approx, comp_net, 
+                          W, b, loss_fn="cross-entropy", verbose=True):
+    """
+    Checks consistency of the optimal objective value.
+    """
+    solution_pt = torch.from_numpy(solution).float().reshape(1, 28, 28)
+    solution_pt = solution_pt.double()
+    obj_value_1 = compute_errors(net, net_approx, comp_net, 
+                                solution_pt, W, b, loss_fn=loss_fn)[0]
+    assert np.isclose(obj_value_1, obj_value, rtol=1e-5, atol=1e-8), "❌ Objective value not consistent!"
+
+    if verbose:
+        print(f"\n🔍 Ojective values (x2):\t {obj_value_1, obj_value}")
+        print("✅ Consistency check passed.")
+
+
 # ------------- #
 # Preliminaries #
 # ------------- #
@@ -157,7 +314,7 @@ def compute_loss_torch(logits_1, logits_2, loss_fn="cross-entropy"):
 # ------------ #
 
 
-def objective_coeff(compnet, sample, mode="np"):
+def objective_coeff(comp_net, sample, mode="np"):
     """
     Get shortcut weights and biases necessary for the computation of the objective function.
     These shortcut weights are not mentioned in the paper.
@@ -166,8 +323,8 @@ def objective_coeff(compnet, sample, mode="np"):
 
     assert sample.shape[0] == 1 # one sample in a batch
 
-    saturations = eval_one_sample(compnet, sample)                     # get saturation
-    target_net = squeeze_network(prune_network(compnet, saturations))  # squezze network 
+    saturations = eval_one_sample(comp_net, sample)                     # get saturation
+    target_net = squeeze_network(prune_network(comp_net, saturations))  # squezze network 
 
     W = target_net[-1].weight.data
     b = target_net[-1].bias.data
@@ -187,27 +344,27 @@ def objective_coeff(compnet, sample, mode="np"):
     return W, b, W_1, b_1
 
 
-def constraints_coeff(compnet, sample):
+def constraints_coeff(comp_net, sample):
     """
     Taken from Petra...
 
     Compute the shortcut weights and biases necessary for building the contraints.
     Shortcut weights and biases associated to saturated and unsaturation units should be W_ji and -W_ji, resp.,
     and are all associated with non-positive contraints (cf. Eq. (7)-(12)).
-    We multiply them by -1 to handle non-negative contraints (required by solver).
+    NOTE: We multiply them by -1 to handle non-negative contraints (required by solver).
     """
         # extract the sequential 
     #    net = next(iter(net.children())) NO NEED FOR COMPNET
-    assert isinstance(compnet, nn.Sequential)
+    assert isinstance(comp_net, nn.Sequential)
     
-    saturations = eval_one_sample(compnet, sample)
+    saturations = eval_one_sample(comp_net, sample)
 
     A_list = []
     bound_list = []
 
     # Compute the shortcut weights of each layer j (squeeze the subnet up to layer j) => W_ji and W_j0
     for i, saturation in enumerate(saturations):
-        subnet = get_subnetwork(compnet, i)
+        subnet = get_subnetwork(comp_net, i)
         if i == 0:
             target = subnet
         else:
@@ -216,20 +373,22 @@ def constraints_coeff(compnet, sample):
         W = target[-1].weight.data
         b = target[-1].bias.data
 
-        # unsaturated (U) and saturated (S) weights and biases
-        W_U = W[torch.logical_not(saturation).flatten()]
-        b_U = b[torch.logical_not(saturation).flatten()].reshape(-1, 1)
-        W_S = W[saturation.flatten()]
-        b_S = b[saturation.flatten()].reshape(-1, 1)
+        # saturated (S ~ False) and unsaturated (U ~ True) weights and biases
+        W_S = W[torch.logical_not(saturation).flatten()]
+        b_S = b[torch.logical_not(saturation).flatten()].reshape(-1, 1)
+        W_U = W[saturation.flatten()]
+        b_U = b[saturation.flatten()].reshape(-1, 1)
 
-        bound_for_lower = torch.full((W_U.shape[0],), -TOL, dtype=torch.float64)
-        bound_for_higher = torch.full((W_S.shape[0],), -TOL, dtype=torch.float64)
+        # bound_for_lower = torch.full((W_U.shape[0],), -TOL, dtype=torch.float64)
+        # bound_for_higher = torch.full((W_S.shape[0],), -TOL, dtype=torch.float64)
+        bound_U = torch.zeros((W_U.shape[0],), dtype=torch.float64)  # XXX
+        bound_S = torch.zeros((W_S.shape[0],), dtype=torch.float64)  # XXX
         
         W = torch.vstack([W_U, -1*W_S])
         b = torch.vstack([b_U, -1*b_S])
         
         A = torch.hstack([b, W])
-        bound = torch.hstack([bound_for_lower, bound_for_higher])
+        bound = torch.hstack([bound_U, bound_S]) # XXX
         
         A_list.append(A)
         bound_list.append(bound)
@@ -239,7 +398,7 @@ def constraints_coeff(compnet, sample):
     bounds = bounds.detach().cpu().numpy().astype(np.float64)  # torch to numpy
 
     # Fix x[0] = 1
-    A_reduced = A[:, 1:]  # Shape: (6000, 784)
+    A_reduced = A[:, 1:]                # Shape: (6000, 784)
     adjusted_bounds = bounds - A[:, 0]  # Shape: (6000,)
 
     return A_reduced, adjusted_bounds
@@ -261,6 +420,21 @@ def objective_fn_np(x, W, b, loss_fn="cross-entropy"):
     # Compute objective as function of the inputs x_i's
     # Add "minus" sign for minimization instead of maximization
     objective = -compute_loss(logits_1, logits_2, loss_fn=loss_fn)
+
+    return objective
+
+
+def objective_fn_torch(x, W, b, loss_fn="cross-entropy"):
+    """Compute non-linear objective function in numpy: Eq. (7) in short document, in PyTorch."""
+
+    # Perform matrix-vector multiplication (send sample to squeeze network)
+    logits_all = W @ x + b
+    nb_classes = len(logits_all) // 2
+    logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:] 
+
+    # Compute objective as function of the inputs x_i's
+    # Add "minus" sign for minimization instead of maximization
+    objective = -compute_loss_torch(logits_1, logits_2, loss_fn=loss_fn)
 
     return objective
 
@@ -294,7 +468,6 @@ def grad_fn_np_old(x, WW, bb, loss_fn="cross-entropy"):
     b = bb[:half]
     b_tilde = bb[half:]
 
-    # Forward pass
     xi = W @ x + b.reshape(-1, 1)           # shape: (C, 1)
     xi_tilde = W_tilde @ x + b_tilde.reshape(-1, 1)
 
@@ -331,7 +504,6 @@ def grad_fn_np(x, WW, bb, loss_fn="cross-entropy"):
     b = bb[:half]
     b_tilde = bb[half:]
 
-    # Forward pass
     xi = W @ x + b.reshape(-1, 1)
     xi_tilde = W_tilde @ x + b_tilde.reshape(-1, 1)
 
@@ -346,6 +518,35 @@ def grad_fn_np(x, WW, bb, loss_fn="cross-entropy"):
     return gradient  # shape: (D,)
 
 
+def grad_fn_torch(x, WW, bb, loss_fn="cross-entropy"):
+    """
+    Analytic gradient calculation in PyTorch, converted from your numpy code.
+    """
+    x = x.view(-1, 1)  # ensure shape (D,1)
+
+    half = WW.shape[0] // 2
+    W = WW[:half, :]
+    W_tilde = WW[half:, :]
+    b = bb[:half].view(-1, 1)
+    b_tilde = bb[half:].view(-1, 1)
+
+    xi = W @ x + b       # shape: (C,1)
+    xi_tilde = W_tilde @ x + b_tilde
+
+    y = F.softmax(xi, dim=0)                # (C,1)
+    y_tilde = F.softmax(xi_tilde, dim=0)
+
+    # Compute L (loss) -- you need to implement this in torch
+    L = compute_loss_torch(xi, xi_tilde, loss_fn=loss_fn)  # same as your compute_loss but in torch
+
+    term_1 = W_tilde.T @ (y_tilde - y)
+    term_2 = W.T @ (y * (torch.log(y_tilde + 1e-12) + L))
+
+    gradient = -(term_1 - term_2).squeeze()
+
+    return gradient
+
+
 # def objective_fn_torch(x_np, W, b, loss_fn="cross-entropy"):
 #     """Torch-compatible objective function for use with SciPy."""
 #     # Ensure x is a differentiable tensor
@@ -357,7 +558,6 @@ def grad_fn_np(x, WW, bb, loss_fn="cross-entropy"):
 #     if not torch.is_tensor(b):
 #         b = torch.tensor(b, dtype=torch.float32)
 
-#     # Forward pass
 #     logits_all = W @ x_torch + b
 #     nb_classes = logits_all.shape[0] // 2
 #     logits_1, logits_2 = logits_all[:nb_classes], logits_all[nb_classes:]
@@ -385,16 +585,25 @@ def grad_fn_np(x, WW, bb, loss_fn="cross-entropy"):
 # ----------- #
 
 
-def constraint_xi_0(x, W_1, b_1, p=0.85):
-    """Compute costraint xi_0 ≤ 0 Eq. (8) in short document."""
+def constraint_xi_0(x, W_1, b_1, p=0.7):
+    """Compute constraint xi_0 ≤ 0 Eq. (8) in short document."""
     logits = W_1 @ x + b_1
     xi_c = np.max(logits)
     xi_0 = np.sum(np.exp(logits - xi_c)) - 1/p
 
-    return -xi_0  # flip sign for non-positive constraint
+    return -xi_0  # flip sign for non-negative constraint
 
 
-def jac_constraint_xi_0(x, W_1, b_1, p=0.85):
+def constraint_xi_0_torch(x, W_1, b_1, p=0.7):
+    """Compute constraint xi_0 ≤ 0 Eq. (8) in short document."""
+    logits = W_1 @ x + b_1            # shape: (C,)
+    xi_c = torch.max(logits)
+    xi_0 = torch.sum(torch.exp(logits - xi_c)) - 1.0 / p
+
+    return -xi_0  # flipped sign for non-negative constraint
+
+
+def jac_constraint_xi_0(x, W_1, b_1, p=0.7):
     """
     Compute the Jacobian (gradient) of the constraint:
     xi_0(x) = sum_j (e^{xi_j - xi_c}) - 1/p
@@ -410,13 +619,12 @@ def jac_constraint_xi_0(x, W_1, b_1, p=0.85):
     xi_c = xi[c]
 
     exp_terms = np.exp(xi - xi_c)  # shape: (C,)
+    weighted_sum = W.T @ exp_terms  # shape: (D,)
+    grad = weighted_sum - W[c, :] * np.sum(exp_terms)
 
-    W_diff = W - W[c, :]                          # shape: (C, D)
-    weighted_diffs = W_diff * exp_terms[:, None]  # shape: (C, D)
-    grad = weighted_diffs.sum(axis=0)             # shape: (D,)
 
     # Return gradient of -xi_0 (for scipy's 'ineq' form)
-    return csr_matrix(-grad)
+    return -grad
 
 
 def constraints_xj_s(x, A_reduced, bounds):
@@ -442,35 +650,154 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
     return csr_matrix(A_reduced)
 
 
+# ----------- #
+# NLP Classes #
+# ----------- #
+
+
+class ToyProblemOld(object):
+
+        def __init__(self, W, b, W_1, b_1, A, bounds):
+            self.W = W
+            self.b = b
+            self.W_1 = W_1
+            self.b_1 = b_1
+            self.A = A
+            self.bounds = bounds
+            self.n = W.shape[1]  # Number of decision variables
+
+        def objective(self, x):
+            return objective_fn_np(x, self.W, self.b, loss_fn="cross-entropy")
+
+        def gradient(self, x):
+            return grad_fn_np(x, self.W, self.b, loss_fn="cross-entropy")
+
+        def constraints(self, x):
+            linear_part = constraints_xj_s(x, self.A, self.bounds) 
+            nonlinear_part = constraint_xi_0(x, self.W_1, self.b_1)
+            return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
+
+        def jacobian(self, x):
+            jac_xj = jac_constraints_xj_s(x, self.A, self.bounds)
+            jac_x0 = jac_constraint_xi_0(x, self.W_1, self.b_1)
+            full_jac = vstack([jac_xj, jac_x0])  # shape: (m+1, n)
+            return full_jac.data.astype(np.float64)
+
+        # def jacobianstructure(self):
+        #     A_sparse = csr_matrix(self.A)
+        #     return A_sparse.nonzero()  # tuple (row_indices, col_indices)
+        
+        def jacobianstructure(self):
+            A_sparse = csr_matrix(self.A)
+            jac_nl = jac_constraint_xi_0(np.zeros(self.n), self.W_1, self.b_1)  # dummy x
+            full_jac = vstack([A_sparse, jac_nl])
+            return full_jac.nonzero()
+
+
+class ToyProblem(object):
+
+    def __init__(self, W, b, W_1, b_1, A, bounds, device='cpu'):
+        # Convert to torch tensors on the specified device
+        self.device = device
+        self.W = torch.tensor(W, dtype=torch.float64, device=device)
+        self.b = torch.tensor(b, dtype=torch.float64, device=device)
+        self.W_1 = torch.tensor(W_1, dtype=torch.float64, device=device)
+        self.b_1 = torch.tensor(b_1, dtype=torch.float64, device=device)
+        self.W_1_np = self.W_1.cpu().numpy()
+        self.b_1_np = self.b_1.cpu().numpy()
+        self.A = A
+
+        self.A_sparse = csr_matrix(A)
+        self.A_sparse.sort_indices()  # 💡 Ensures structure and values align # XXX!
+        self.jac_structure_indices = self.A_sparse.nonzero()
+        self.jac_values = self.A_sparse.data.astype(np.float64)
+
+        self.bounds = bounds
+        self.n = W.shape[1]
+
+        rows_lin, cols_lin = self.jac_structure_indices
+        nonlinear_row = np.full(self.n, self.A.shape[0], dtype=np.int32)
+        nonlinear_col = np.arange(self.n, dtype=np.int32)
+        self.row_indices = np.concatenate([rows_lin.astype(np.int32), nonlinear_row])
+        self.col_indices = np.concatenate([cols_lin.astype(np.int32), nonlinear_col])
+
+
+    def objective(self, x_np):
+        # Convert input to torch tensor with gradient tracking
+        x = torch.tensor(x_np, dtype=torch.float64, device=self.device, requires_grad=True)
+
+        obj = objective_fn_torch(x, self.W, self.b, loss_fn="cross-entropy")
+        return obj.item()  # Return as Python float for IPOPT
+
+    # def gradient(self, x_np):
+    #     x = torch.tensor(x_np, dtype=torch.float64, device=self.device, requires_grad=True)
+
+    #     obj = objective_fn_torch(x, self.W, self.b, loss_fn="cross-entropy")
+    #     grad, = torch.autograd.grad(obj, x, create_graph=False)
+    #     return grad.detach().cpu().numpy()
+    
+    def gradient(self, x_np):
+        x = torch.tensor(x_np, dtype=torch.float64, device=self.device)
+        grad = grad_fn_torch(x, self.W, self.b, loss_fn="cross-entropy")
+        return grad.detach().cpu().numpy()
+
+    # def hessian(self, x_np):
+    #     # Optional: add if IPOPT or your solver supports Hessian evaluation
+    #     x = torch.tensor(x_np, dtype=torch.float64, device=self.device, requires_grad=True)
+    #     # Use torch.autograd.functional.hessian (PyTorch 1.5+)
+    #     hess = torch.autograd.functional.hessian(
+    #         lambda x_: objective_fn_torch(x_, self.W, self.b, loss_fn="cross-entropy"),
+    #         x
+    #     )
+    #     return hess.detach().cpu().numpy()
+
+    def constraints(self, x):
+        # Keep your numpy constraints as before, since constraints functions appear numpy-based
+        # start = time.time()
+        linear_part = constraints_xj_s(x, self.A, self.bounds)
+        nonlinear_part = constraint_xi_0(x, self.W_1_np, self.b_1_np)
+        return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
+
+    def jacobian(self, x):
+        # start = time.time()
+        jac_x0 = jac_constraint_xi_0(x, self.W_1_np, self.b_1_np).astype(np.float64)
+        return np.concatenate([self.jac_values, jac_x0])
+
+    
+    def jacobianstructure(self):
+        # start = time.time()
+        # Nonlinear constraint: dense row at the bottom (last row)
+        return self.row_indices, self.col_indices
+
+
+
 # # --------------------- #
 # # Optimization function #
 # # --------------------- #
 
 
-# def compute_error_nlp(model_name, nb_bits, sample, nb_constraints="all", 
-#                       device="cpu", verbose=False, MODE=""):
+# ----- #
+# SciPy #
+# ----- #
 
-#         NETWORK = os.path.join("checkpoints", model_name)
-#         MODEL = SmallDenseNet 
-#         # LAYERS = 4
-#         # INPUT_SIZE = (1, 28, 28) 
-#         # N = 1 * 28 * 28 
+
+# def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, nb_constraints="all", 
+#                       device="cpu", verbose=False):
+        
+#         net = copy.deepcopy(net)                # deep copy for safety reasons
+#         net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
+#         comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
+
+#         sample = sample.to(device).double()
 
 #         # Start timer
 #         start_time = time.time()
-
-#         # 1. Compute comparing network
-#         net = load_network(MODEL, NETWORK, device=device)
-#         net_approx = load_network(MODEL, NETWORK, device=device)
-#         # NOTE: net_approx is modified here (not obvious, discovered after investgation)!
-#         # Was skip_magic=False before...
-#         compnet = create_comparing_network(net, net_approx, bits=nb_bits, skip_magic=True)
         
 #         # 2. Solve the NLP
 #         # (i) Compute coefficients of the NLP
-#         p = 0.75
-#         W, b, W_1, b_1 = objective_coeff(compnet, sample, mode="np")
-#         A_reduced, bounds = constraints_coeff(compnet, sample)
+#         p = 0.7
+#         W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
+#         A_reduced, bounds = constraints_coeff(comp_net, sample)
 #         if nb_constraints != "all":
 #             A_reduced = A_reduced[:nb_constraints]
 #             bounds = bounds[:nb_constraints]
@@ -491,27 +818,36 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
 #             }
 #                     ]
 
-#         input_bounds = Bounds([0]*W.shape[1], [1]*W.shape[1])  # inputs satisfy 0 ≤ x[i] ≤ 1
+#         # Safe lower and upper bounds after dataset transformation: [-0.5, 2.9]
+#         input_bounds = Bounds([-0.5]*W.shape[1], [2.9]*W.shape[1])
 
 #         # (iii) Initial guess: sample itself
 #         x0 = sample.flatten().cpu().numpy()
+
+#         if verbose:
+#             print("Checking contraints at x0:")
+#             xi_0 = constraint_xi_0(x0, W_1, b_1, p=0.7)
+#             print("Constraint xi_0 ≥ 0:\t", xi_0 >= 0)
+#             xi_js = constraints_xj_s(x0, A_reduced, bounds)
+#             print("Constraints xi_j's ≥ 0:\t", (xi_js >= 0).all())
         
 #         # (iv) Run minimization
 #         method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
 
 #         options = {
-#             'maxiter': 3000,
+#             'maxiter': 10000,
 #             'disp': True,
 #             'sparse_jacobian' : True, # improves a lot!
-#             'xtol' : 1e-5
-#             # 'gtol': 1e-6,           # Gradient norm tolerance
+#             'xtol' : 1e-6,
+#             'gtol': 1e-6,           # Gradient norm tolerance
 #         }
 
 #         iteration = [0]
 
 #         def callback_fn(xk, state=None):
 #             iteration[0] += 1
-#             print(".", end="", flush=True)
+#             if verbose:
+#                 print(".", end="", flush=True)
 
 #         res = minimize(
 #                     objective_fn_np, x0, args=(W, b, "cross-entropy"), # objective
@@ -524,32 +860,70 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
 #                     callback=callback_fn
 #                     )
         
+#         # Compute sample error (3 methods)
+#         objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
+#                                                                         W, b, loss_fn="cross-entropy")
+
+#         # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
+#         with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+#             f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}\n")
+
 #         if verbose:
-#             print("res:", res)
-#             print("Objective value:", res.fun)
-#             print("Xi_0 constraint value (>= 0):", constraint_xi_0(res.x, W_1, b_1, p))
-#             print("Xi_j constraints values (>= 0):", constraints_xj_s(res.x, A_reduced, bounds))
+            
+#             # Checks
+#             print("🔍 Errors:", real_error, computed_error, objective_value)
+#             assert abs(real_error - computed_error) < TOL
+#             assert abs(computed_error - objective_value) < TOL
+#             assert abs(objective_value - real_error) < TOL
+#             print("✅ Errors' consistency check passed.\n")
+
+#             print("✅ Objective value:", res.fun)
+#             print("✅ Optimal solution:", res.x.shape)
+#             sol = x0.reshape(28, 28)        # XXX
+#             import matplotlib.pyplot as plt # XXX
+#             plt.imshow(sol)                 # XXX
+#             plt.show()                      # XXX
+#             sol = res.x.reshape(28, 28)     # XXX
+#             import matplotlib.pyplot as plt # XXX
+#             plt.imshow(sol)                 # XXX
+#             plt.show()                      # XXX
+#             xl, xu = -0.5, 2.9
+#             inside_bounds = np.all(x0 >= xl) and np.all(x0 <= xu)
+#             constraints_satisfied_1 = (constraint_xi_0(x0, W_1, b_1, p) >= 0)
+#             constraints_satisfied_2 = (constraints_xj_s(x0, A_reduced, bounds) >= 0).all()
+#             constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
+#             print(f"🔍 x0 inside variable bounds:\t\t {inside_bounds}")
+#             print(f"🔍 Constraints satisfied at x0:\t\t {constraints_satisfied}")
+#             assert inside_bounds and constraints_satisfied , "❌ Constraints falied at x0!"
+#             print("✅ Constraints and bounds checks passed.")
+
+#             inside_bounds = np.all(res.x >= xl) and np.all(res.x <= xu)
+#             constraints_satisfied_1 = (constraint_xi_0(res.x, W_1, b_1, p) >= 0)
+#             constraints_satisfied_2 = (constraints_xj_s(res.x, A_reduced, bounds) >= 0).all()
+#             constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
+#             print(f"🔍 Sol. inside variable bounds:\t\t {inside_bounds}")
+#             print(f"🔍 Constraints satisfied at sol:\t {constraints_satisfied}")
+#             assert inside_bounds and constraints_satisfied , "❌ Constraints falied at sol!"
+#             print("✅ Constraints and bounds checks passed.")
+
 #             # End timer
 #             end_time = time.time()
-#             elapsed_time = end_time - start_time
+#             elapsed_time = end_time - start_time    
 #             print(f"\nOptimization time {elapsed_time:.4f} seconds")
-
-#         # NOTE: Numpy conversion and numerical stability trick introduce tiny errors...
-#         if MODE == "debug":
             
 #             print("\nErrors\n------")
 #             # check gradient
-#             err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
-#             print("Gradient error:", err)
+#             grad_err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
+#             print("Gradient error:", grad_err)
 
 #             # check jacobians
 #             def wrapper_1(x):
-#                 return constraint_xi_0(x, W_1, b_1, p=0.85)
+#                 return constraint_xi_0(x, W_1, b_1, p=0.7)
 #             def wrapper_2(x):
 #                 return constraints_xj_s(x, A_reduced, bounds)
             
 #             J_numeric_1 = approx_derivative(wrapper_1, x0)
-#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.85)
+#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.7)
 #             print("Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
 
 #             J_numeric_2 = approx_derivative(wrapper_2, x0)
@@ -557,48 +931,178 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
 #             print("Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
 
 #             print("\nSanity checks\n-------------")
-#             # Error: mehtod 1 (minus sign √)
-#             x = sample.flatten().detach().cpu().numpy().astype(np.float64)
-#             objective_value = -objective_fn_np(x, W, b, loss_fn="cross-entropy")
-#             print("Objective value:", objective_value)
-            
-#             # Error: mehtod 2 (minus sign √)
-#             logits_1 = net(sample)
-#             logits_2 = net_approx(sample)
-#             real_error = -(F.softmax(logits_1, dim=1) * F.log_softmax(logits_2, dim=1)).sum().item()
 
-#             # Error: mehtod 3 (minus sign √)
-#             compnet_with_loss_head = LossHead(compnet, loss_fn="cross-entropy")
-#             computed_error = compnet_with_loss_head(sample).item()
 
-#             # Checks
-#             print("Errors:", real_error, computed_error, objective_value)
-#             assert abs(real_error - computed_error) < TOL
-#             assert abs(computed_error - objective_value) < TOL
-#             assert abs(objective_value - real_error) < TOL
+# ----- #
+# IPOPT #
+# ----- #
+
+
+# def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, nb_constraints="all", 
+#                         device="cpu", verbose=False):
+
+#     net = copy.deepcopy(net)                # deep copy for safety reasons
+#     net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
+#     comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
+
+#     sample = sample.to(device).double()
+
+#     # Start timer
+#     start_time = time.time()
     
-#         return res
+#     # 2. Solve the NLP
+#     # (i) Compute coefficients of the NLP
+#     p = 0.7
+#     W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
+#     A_reduced, bounds = constraints_coeff(comp_net, sample)
+#     if nb_constraints != "all":
+#         A_reduced = A_reduced[:nb_constraints]
+#         bounds = bounds[:nb_constraints]
+
+#     # Initial guess: sample itself
+#     x0 = sample.flatten().cpu().numpy()
+
+#     m = A_reduced.shape[0] + 1
+#     n = A_reduced.shape[1]
+
+#     # Safe lower and upper bounds after dataset transformation: [-0.5, 2.9]
+#     xl = np.ones(n, dtype=np.float64)*(-0.5)
+#     xu = np.ones(n, dtype=np.float64)*2.9
+
+#     # Constraints' bounds: [0, ∞)
+#     cl = np.concatenate([np.zeros(m - 1), [0.0]])
+#     cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
+    
+#     problem_obj = ToyProblem(W, b, W_1, b_1, A_reduced, bounds)
+
+#     nlp = cyipopt.Problem(
+#             n=n,    # nb of variables
+#             m=m,    # nb of constraints
+#             lb=xl,  # lower bounds
+#             ub=xu,  # upper bounds
+#             cl=cl,  # constraints lower bounds
+#             cu=cu,  # constraints upper bounds
+#             problem_obj=problem_obj
+#         )
+
+#     print_level = 5 if verbose==True else 1
+#     nlp.add_option("print_level", print_level)
+#     nlp.add_option("tol", 1e-6)
+#     nlp.add_option("hessian_approximation", "limited-memory") # XXX
+#     constr_tol = 1e-6
+#     nlp.add_option("constr_viol_tol", constr_tol)
+
+#     if verbose:
+
+#         # Checks
+#         check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
+#         check_feasibility(problem_obj, x0, xl, xu, cl, cu, constr_tol, verbose)
+#         check_objective_gradient(problem_obj, x0, verbose=verbose)
+#         check_constraint_jacobian(problem_obj, x0, verbose=verbose)
+
+#     solution, info = nlp.solve(x0) # solve problem
+
+#     # Compute sample error (3 methods)
+#     objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
+#                                                                     W, b, loss_fn="cross-entropy")
+
+#     # results: error_1, error_2, error_3 (should coincide) and ERROR IN POLYTOPE
+#     with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+#         f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}\n")        
+
+#     if verbose:
+#         print("\nErrors at x0 (1,2,3) and maximal error (4)")
+#         print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}")
+
+#         print("\n✅ Optimal solution:", solution.shape)
+#         print("Objective value:", info["obj_val"])
+#         check_feasibility(problem_obj, solution, xl, xu, cl, cu, constr_tol)
+
+#         check_objective_value(solution, -info["obj_val"], 
+#                             net, net_approx, comp_net, 
+#                             W, b, loss_fn="cross-entropy", verbose=True)
+        
+#         check_predictions_consistency(x0, comp_net)
+#         check_predictions_consistency(solution, comp_net)
 
 
-# Uncomment this for testing
+
+
+# # Uncomment this for testing
 
 # if __name__ == "__main__":
-        
-#     # 1. Get sample (just for testing)
+
+#     # Parameters
 #     DEVICE = "cpu"
+#     print(f"Using device: {DEVICE}\n")
 
+#     model_name = "mnist_smalldensenet_1024_50.pt"
+#     bits = 16
+
+#     start, end = 42, 44
+#     output_dir = "."
+        
+#     # Dataset
 #     test_dataset = create_dataset(mode="experiment")
-#     subset_dataset = Subset(test_dataset, list(range(13, 14))) # 1 arbitraty sample
+#     subset_dataset = Subset(test_dataset, list(range(start, end)))
 
-#     for sample, _ in subset_dataset:
-#         sample = sample.to(DEVICE).double()
-#         break
-    
-#     model_name = "mnist_smalldensenet_1024_2.pt"
-#     nb_bits = 16
+#     # Networks
+#     NETWORK = os.path.join("checkpoints", model_name)
+#     MODEL = SmallDenseNet 
+#     # LAYERS = 4
+#     # INPUT_SIZE = (1, 28, 28) 
+#     # N = 1 * 28 * 28 
 
-#     # compute error
-#     res = compute_error_nlp(model_name, nb_bits, sample, nb_constraints=50, 
-#                             device=DEVICE, verbose=True, MODE="debug")
+#     net = load_network(MODEL, NETWORK, device=DEVICE)
+#     net_approx = load_network(MODEL, NETWORK, device=DEVICE)
+#     comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
+
+#     # Compute errors
+#     for sample, _ in tqdm(subset_dataset, desc="Processing"):
+
+#         compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, nb_constraints="all", 
+#                             device="cpu", verbose=False)
 
 
+
+
+
+
+
+
+
+
+    # # --- Benchmark Function ---
+    # def benchmark_problem(problem, name="Problem", repeat=100):
+    #     print(f"Benchmarking {name} with {repeat} repetitions...")
+    #     start = time.time()
+    #     for _ in range(repeat):
+    #         problem.objective(x0)
+    #     print(f"Objective avg: {(time.time() - start)/repeat:.2e} sec")
+
+    #     start = time.time()
+    #     for _ in range(repeat):
+    #         problem.gradient(x0)
+    #     print(f"Gradient avg: {(time.time() - start)/repeat:.2e} sec")
+
+    #     start = time.time()
+    #     for _ in range(repeat):
+    #         problem.constraints(x0)
+    #     print(f"Constraints avg: {(time.time() - start)/repeat:.2e} sec")
+
+    #     start = time.time()
+    #     for _ in range(repeat):
+    #         problem.jacobian(x0)
+    #     print(f"Jacobian avg: {(time.time() - start)/repeat:.2e} sec")
+
+    #     print()
+
+    # # --- Run benchmarks ---
+    # problem_old = ToyProblemOld(W, b, W_1, b_1, A_reduced, bounds)
+    # problem_fast = ToyProblem(W, b, W_1, b_1, A_reduced, bounds)
+
+    # benchmark_problem(problem_old, "ToyProblemOld", repeat=500)
+    # benchmark_problem(problem_fast, "ToyProblem (Optimized)", repeat=500)
+
+    # CHECK THE CONSTRAINTS PROBLEM!!!
+    # Retrain a network with less units...
