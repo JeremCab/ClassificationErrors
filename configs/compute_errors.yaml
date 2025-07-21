@@ -1,10 +1,15 @@
 # configs/compute_errors.yaml
-device: "cpu" # this part is on cpu for the moment...
-optimization: "non-linear"  # "linear", "non-linear"
-method: "scipy" # "scipy", "ipopt"
+
 model_name: mnist_smalldensenet_1024_50.pt
-start: 52
-end: 54
+device: "cpu" # this part is on cpu for the moment...
+
+optimization: "non-linear"  # "linear", "non-linear"
+method: "ipopt" # "scipy", "ipopt"
+
+p: 0.7
+start: 42
+end: 43
 bits: 16
+verbose: true
+
 output_dir: results
-verbose: false

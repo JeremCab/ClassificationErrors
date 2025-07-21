@@ -9,7 +9,7 @@ import copy
 
 import numpy as np
 from scipy.sparse import vstack, csr_matrix
-from scipy.optimize import Bounds, linprog, minimize, check_grad, SR1, BFGS
+from scipy.optimize import OptimizeResult, Bounds, linprog, minimize, check_grad, SR1, BFGS
 from scipy.optimize._numdiff import approx_derivative
 from scipy.sparse import csr_matrix, vstack, lil_matrix
 
@@ -154,19 +154,27 @@ def check_shapes_consistency(A, x0, cl, cu, xl, xu, verbose=True):
         print("✅ Shapes and sizes consistent.")
 
 
-def check_feasibility(problem, x0, xl, xu, cl, cu, constr_tol=1e-8, verbose=True):
+def check_bounds_and_constraints(problem, x0, xl, xu, cl, cu, constr_tol=1e-8, verbose=True):
     """
     Check if x is within variable bounds and satisfies constraints.
     """
     inside_bounds = np.all(x0 >= xl) and np.all(x0 <= xu)
-    c_val = problem.constraints(x0)
+
+    if isinstance(problem, NonLinearProblem):   # IPOPT version
+        c_val = problem.constraints(x0)
+    elif isinstance(problem, list):             # SciPy version: problem is the list of contraints in this case
+        constraints_l = problem
+        c_val = np.concatenate([
+            np.atleast_1d(c["fun"](x0, *c.get("args", ()))) for c in constraints_l
+            ])
+
     constraints_satisfied = np.all(c_val >= cl - constr_tol) and np.all(c_val <= cu) # tolerence 1e-8
 
     assert inside_bounds , "❌ Constraints failed at x!"
     assert constraints_satisfied , "❌ Constraints failed at x!"
 
     if verbose:
-        print(f"\n🔍 x inside variable bounds:\t {inside_bounds}")
+        print(f"\n🔍 Bounds satisfied at x:\t {inside_bounds}")
         print("✅ Bounds checks passed.")
 
         print(f"\n🔍 Constraints satisfied at x:\t {constraints_satisfied}")
@@ -381,14 +389,14 @@ def constraints_coeff(comp_net, sample):
 
         # bound_for_lower = torch.full((W_U.shape[0],), -TOL, dtype=torch.float64)
         # bound_for_higher = torch.full((W_S.shape[0],), -TOL, dtype=torch.float64)
-        bound_U = torch.zeros((W_U.shape[0],), dtype=torch.float64)  # XXX
-        bound_S = torch.zeros((W_S.shape[0],), dtype=torch.float64)  # XXX
+        bound_U = torch.zeros((W_U.shape[0],), dtype=torch.float64)
+        bound_S = torch.zeros((W_S.shape[0],), dtype=torch.float64)
         
         W = torch.vstack([W_U, -1*W_S])
         b = torch.vstack([b_U, -1*b_S])
         
         A = torch.hstack([b, W])
-        bound = torch.hstack([bound_U, bound_S]) # XXX
+        bound = torch.hstack([bound_U, bound_S])
         
         A_list.append(A)
         bound_list.append(bound)
@@ -655,15 +663,16 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
 # ----------- #
 
 
-class ToyProblemOld(object):
+class NonLinearProblemOld(object):
 
-        def __init__(self, W, b, W_1, b_1, A, bounds):
+        def __init__(self, W, b, W_1, b_1, A, bounds, p):
             self.W = W
             self.b = b
             self.W_1 = W_1
             self.b_1 = b_1
             self.A = A
             self.bounds = bounds
+            self.p = p
             self.n = W.shape[1]  # Number of decision variables
 
         def objective(self, x):
@@ -674,12 +683,12 @@ class ToyProblemOld(object):
 
         def constraints(self, x):
             linear_part = constraints_xj_s(x, self.A, self.bounds) 
-            nonlinear_part = constraint_xi_0(x, self.W_1, self.b_1)
+            nonlinear_part = constraint_xi_0(x, self.W_1, self.b_1, self.p)
             return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
 
         def jacobian(self, x):
             jac_xj = jac_constraints_xj_s(x, self.A, self.bounds)
-            jac_x0 = jac_constraint_xi_0(x, self.W_1, self.b_1)
+            jac_x0 = jac_constraint_xi_0(x, self.W_1, self.b_1, self.p)
             full_jac = vstack([jac_xj, jac_x0])  # shape: (m+1, n)
             return full_jac.data.astype(np.float64)
 
@@ -689,14 +698,14 @@ class ToyProblemOld(object):
         
         def jacobianstructure(self):
             A_sparse = csr_matrix(self.A)
-            jac_nl = jac_constraint_xi_0(np.zeros(self.n), self.W_1, self.b_1)  # dummy x
+            jac_nl = jac_constraint_xi_0(np.zeros(self.n), self.W_1, self.b_1, self.p)  # dummy x
             full_jac = vstack([A_sparse, jac_nl])
             return full_jac.nonzero()
 
 
-class ToyProblem(object):
+class NonLinearProblem(object):
 
-    def __init__(self, W, b, W_1, b_1, A, bounds, device='cpu'):
+    def __init__(self, W, b, W_1, b_1, A, bounds, p, device='cpu'):
         # Convert to torch tensors on the specified device
         self.device = device
         self.W = torch.tensor(W, dtype=torch.float64, device=device)
@@ -708,11 +717,12 @@ class ToyProblem(object):
         self.A = A
 
         self.A_sparse = csr_matrix(A)
-        self.A_sparse.sort_indices()  # 💡 Ensures structure and values align # XXX!
+        self.A_sparse.sort_indices()  # Ensures structure and values align
         self.jac_structure_indices = self.A_sparse.nonzero()
         self.jac_values = self.A_sparse.data.astype(np.float64)
 
         self.bounds = bounds
+        self.p = p
         self.n = W.shape[1]
 
         rows_lin, cols_lin = self.jac_structure_indices
@@ -755,12 +765,12 @@ class ToyProblem(object):
         # Keep your numpy constraints as before, since constraints functions appear numpy-based
         # start = time.time()
         linear_part = constraints_xj_s(x, self.A, self.bounds)
-        nonlinear_part = constraint_xi_0(x, self.W_1_np, self.b_1_np)
+        nonlinear_part = constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p)
         return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
 
     def jacobian(self, x):
         # start = time.time()
-        jac_x0 = jac_constraint_xi_0(x, self.W_1_np, self.b_1_np).astype(np.float64)
+        jac_x0 = jac_constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p).astype(np.float64)
         return np.concatenate([self.jac_values, jac_x0])
 
     
@@ -781,9 +791,9 @@ class ToyProblem(object):
 # ----- #
 
 
-# def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, nb_constraints="all", 
-#                       device="cpu", verbose=False):
-        
+# def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, p=0.7,
+#                         nb_constraints="all", start=0, end=1, device="cpu", verbose=False):
+                
 #         net = copy.deepcopy(net)                # deep copy for safety reasons
 #         net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
 #         comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
@@ -795,12 +805,21 @@ class ToyProblem(object):
         
 #         # 2. Solve the NLP
 #         # (i) Compute coefficients of the NLP
-#         p = 0.7
 #         W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
 #         A_reduced, bounds = constraints_coeff(comp_net, sample)
 #         if nb_constraints != "all":
 #             A_reduced = A_reduced[:nb_constraints]
 #             bounds = bounds[:nb_constraints]
+        
+#         # bounds
+#         m = A_reduced.shape[0] + 1
+#         n = A_reduced.shape[1]
+#         # Safe lower and upper bounds after dataset transformation: [-0.5, 2.9]
+#         xl = np.ones(n, dtype=np.float64)*(-0.5)
+#         xu = np.ones(n, dtype=np.float64)*2.9
+#         # Constraints' bounds: [0, ∞)
+#         cl = np.concatenate([np.zeros(m - 1), [0.0]])
+#         cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
 
 #         # (ii) Wrap the constraint in dict form for minimize()
 #         constraints = [
@@ -824,13 +843,6 @@ class ToyProblem(object):
 #         # (iii) Initial guess: sample itself
 #         x0 = sample.flatten().cpu().numpy()
 
-#         if verbose:
-#             print("Checking contraints at x0:")
-#             xi_0 = constraint_xi_0(x0, W_1, b_1, p=0.7)
-#             print("Constraint xi_0 ≥ 0:\t", xi_0 >= 0)
-#             xi_js = constraints_xj_s(x0, A_reduced, bounds)
-#             print("Constraints xi_j's ≥ 0:\t", (xi_js >= 0).all())
-        
 #         # (iv) Run minimization
 #         method = 'trust-constr' # 'trust-constr' (better but slower), 'SLSQP'
 
@@ -870,76 +882,62 @@ class ToyProblem(object):
 
 #         if verbose:
             
-#             # Checks
-#             print("🔍 Errors:", real_error, computed_error, objective_value)
-#             assert abs(real_error - computed_error) < TOL
-#             assert abs(computed_error - objective_value) < TOL
-#             assert abs(objective_value - real_error) < TOL
-#             print("✅ Errors' consistency check passed.\n")
+#             print("\n-----------------------\n")
 
-#             print("✅ Objective value:", res.fun)
-#             print("✅ Optimal solution:", res.x.shape)
-#             sol = x0.reshape(28, 28)        # XXX
-#             import matplotlib.pyplot as plt # XXX
-#             plt.imshow(sol)                 # XXX
-#             plt.show()                      # XXX
-#             sol = res.x.reshape(28, 28)     # XXX
-#             import matplotlib.pyplot as plt # XXX
-#             plt.imshow(sol)                 # XXX
-#             plt.show()                      # XXX
-#             xl, xu = -0.5, 2.9
-#             inside_bounds = np.all(x0 >= xl) and np.all(x0 <= xu)
-#             constraints_satisfied_1 = (constraint_xi_0(x0, W_1, b_1, p) >= 0)
-#             constraints_satisfied_2 = (constraints_xj_s(x0, A_reduced, bounds) >= 0).all()
-#             constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
-#             print(f"🔍 x0 inside variable bounds:\t\t {inside_bounds}")
-#             print(f"🔍 Constraints satisfied at x0:\t\t {constraints_satisfied}")
-#             assert inside_bounds and constraints_satisfied , "❌ Constraints falied at x0!"
-#             print("✅ Constraints and bounds checks passed.")
+#             check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
+#             check_bounds_and_constraints(constraints, x0, xl, xu, cl, cu, 1e-6, verbose)
 
-#             inside_bounds = np.all(res.x >= xl) and np.all(res.x <= xu)
-#             constraints_satisfied_1 = (constraint_xi_0(res.x, W_1, b_1, p) >= 0)
-#             constraints_satisfied_2 = (constraints_xj_s(res.x, A_reduced, bounds) >= 0).all()
-#             constraints_satisfied = constraints_satisfied_1 and constraints_satisfied_2
-#             print(f"🔍 Sol. inside variable bounds:\t\t {inside_bounds}")
-#             print(f"🔍 Constraints satisfied at sol:\t {constraints_satisfied}")
-#             assert inside_bounds and constraints_satisfied , "❌ Constraints falied at sol!"
-#             print("✅ Constraints and bounds checks passed.")
+#             print("\n-----------------------")
 
-#             # End timer
+
+#             print("\nErrors at x0 (1,2,3) and maximal error (4)")
+#             print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}")
+
+#             print("\n✅ Optimal solution:", res.x.shape)
+#             print("Objective value:", res.fun)
+#             check_bounds_and_constraints(constraints, res.x, xl, xu, cl, cu, 1e-6, verbose)
+
+#             check_objective_value(res.x, -res.fun, 
+#                                 net, net_approx, comp_net, 
+#                                 W, b, loss_fn="cross-entropy", verbose=verbose)
+            
+#             check_predictions_consistency(x0, comp_net)
+#             check_predictions_consistency(res.x, comp_net)
+
 #             end_time = time.time()
 #             elapsed_time = end_time - start_time    
-#             print(f"\nOptimization time {elapsed_time:.4f} seconds")
+#             print(f"\nOptimization time: {elapsed_time:.4f} seconds")
+
+#             print("\n-----------------------\n")
             
-#             print("\nErrors\n------")
 #             # check gradient
 #             grad_err = check_grad(objective_fn_np, grad_fn_np, x0, W, b, "cross-entropy")
-#             print("Gradient error:", grad_err)
+#             print("🔍 Gradient error:", grad_err)
 
 #             # check jacobians
 #             def wrapper_1(x):
-#                 return constraint_xi_0(x, W_1, b_1, p=0.7)
+#                 return constraint_xi_0(x, W_1, b_1, p)
 #             def wrapper_2(x):
 #                 return constraints_xj_s(x, A_reduced, bounds)
             
 #             J_numeric_1 = approx_derivative(wrapper_1, x0)
-#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p=0.7)
-#             print("Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
+#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p)
+#             print("🔍 Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
 
 #             J_numeric_2 = approx_derivative(wrapper_2, x0)
 #             J_analytic_2 = jac_constraints_xj_s(x0, A_reduced, bounds)
-#             print("Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
+#             print("🔍 Jacobian #2 error:", np.max(np.abs(J_numeric_2 - J_analytic_2)))
 
-#             print("\nSanity checks\n-------------")
-
-
-# ----- #
-# IPOPT #
-# ----- #
+#         print("\n-----------------------\n")
 
 
-# def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, nb_constraints="all", 
-#                         device="cpu", verbose=False):
+# # ----- #
+# # SciPy #
+# # ----- #
+
+
+# def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
+#                         nb_constraints="all", start=0, end=1, device="cpu", verbose=False):
 
 #     net = copy.deepcopy(net)                # deep copy for safety reasons
 #     net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
@@ -952,7 +950,6 @@ class ToyProblem(object):
     
 #     # 2. Solve the NLP
 #     # (i) Compute coefficients of the NLP
-#     p = 0.7
 #     W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
 #     A_reduced, bounds = constraints_coeff(comp_net, sample)
 #     if nb_constraints != "all":
@@ -973,7 +970,7 @@ class ToyProblem(object):
 #     cl = np.concatenate([np.zeros(m - 1), [0.0]])
 #     cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
     
-#     problem_obj = ToyProblem(W, b, W_1, b_1, A_reduced, bounds)
+#     problem_obj = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds, p=p)
 
 #     nlp = cyipopt.Problem(
 #             n=n,    # nb of variables
@@ -988,17 +985,9 @@ class ToyProblem(object):
 #     print_level = 5 if verbose==True else 1
 #     nlp.add_option("print_level", print_level)
 #     nlp.add_option("tol", 1e-6)
-#     nlp.add_option("hessian_approximation", "limited-memory") # XXX
+#     nlp.add_option("hessian_approximation", "limited-memory")
 #     constr_tol = 1e-6
 #     nlp.add_option("constr_viol_tol", constr_tol)
-
-#     if verbose:
-
-#         # Checks
-#         check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
-#         check_feasibility(problem_obj, x0, xl, xu, cl, cu, constr_tol, verbose)
-#         check_objective_gradient(problem_obj, x0, verbose=verbose)
-#         check_constraint_jacobian(problem_obj, x0, verbose=verbose)
 
 #     solution, info = nlp.solve(x0) # solve problem
 
@@ -1011,21 +1000,28 @@ class ToyProblem(object):
 #         f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}\n")        
 
 #     if verbose:
+
+#         print("\n-----------------------\n")
+
+#         check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
+#         check_bounds_and_constraints(problem_obj, x0, xl, xu, cl, cu, constr_tol, verbose)
+#         check_objective_gradient(problem_obj, x0, verbose)
+#         check_constraint_jacobian(problem_obj, x0, verbose)
+#         check_predictions_consistency(x0, comp_net)
+
+#         print("\n-----------------------")
+
 #         print("\nErrors at x0 (1,2,3) and maximal error (4)")
 #         print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}")
-
 #         print("\n✅ Optimal solution:", solution.shape)
 #         print("Objective value:", info["obj_val"])
-#         check_feasibility(problem_obj, solution, xl, xu, cl, cu, constr_tol)
-
+#         check_bounds_and_constraints(problem_obj, solution, xl, xu, cl, cu, constr_tol, verbose)
 #         check_objective_value(solution, -info["obj_val"], 
 #                             net, net_approx, comp_net, 
-#                             W, b, loss_fn="cross-entropy", verbose=True)
-        
-#         check_predictions_consistency(x0, comp_net)
+#                             W, b, loss_fn="cross-entropy", verbose=verbose)
 #         check_predictions_consistency(solution, comp_net)
 
-
+#         print("\n-----------------------\n")
 
 
 # # Uncomment this for testing
@@ -1071,7 +1067,6 @@ class ToyProblem(object):
 
 
 
-
     # # --- Benchmark Function ---
     # def benchmark_problem(problem, name="Problem", repeat=100):
     #     print(f"Benchmarking {name} with {repeat} repetitions...")
@@ -1098,11 +1093,11 @@ class ToyProblem(object):
     #     print()
 
     # # --- Run benchmarks ---
-    # problem_old = ToyProblemOld(W, b, W_1, b_1, A_reduced, bounds)
-    # problem_fast = ToyProblem(W, b, W_1, b_1, A_reduced, bounds)
+    # problem_old = NonLinearProblemOld(W, b, W_1, b_1, A_reduced, bounds)
+    # problem_fast = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds)
 
-    # benchmark_problem(problem_old, "ToyProblemOld", repeat=500)
-    # benchmark_problem(problem_fast, "ToyProblem (Optimized)", repeat=500)
+    # benchmark_problem(problem_old, "NonLinearProblemOld", repeat=500)
+    # benchmark_problem(problem_fast, "NonLinearProblem (Optimized)", repeat=500)
 
     # CHECK THE CONSTRAINTS PROBLEM!!!
     # Retrain a network with less units...
