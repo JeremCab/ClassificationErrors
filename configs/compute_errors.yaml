@@ -4,12 +4,14 @@ model_name: mnist_smalldensenet_1024_50.pt
 device: "cpu" # this part is on cpu for the moment...
 
 optimization: "non-linear"  # "linear", "non-linear"
-method: "ipopt" # "scipy", "ipopt"
+method: "nlopt" # "scipy", "ipopt", "nlopt" (<- best!)
 
 p: 0.7
-start: 42
-end: 43
+start: 1
+end: 2
 bits: 16
-verbose: true
+tol: 1e-06
+nb_iter: 20000
+verbose: false
 
 output_dir: results

@@ -1,53 +1,63 @@
+import nlopt
 import numpy as np
-import cyipopt
 
-class ToyProblem(object):
-    def objective(self, x):
-        return (x[0] - 1)**2 + (x[1] - 2)**2
+# Problem dimension
+n = 10  # number of decision variables
 
-    def gradient(self, x):
-        return np.array([
-            2 * (x[0] - 1),
-            2 * (x[1] - 2)
-        ], dtype=np.float64)
+# Define a nonlinear objective function (to be minimized)
+def objective(x, grad):
+    if grad.size > 0:
+        grad[:] = 2 * x  # gradient of x^2
+    return np.sum(x**2)
 
-    def constraints(self, x):
-        # Nonlinear inequality constraint: x[0]^2 + x[1] >= 1
-        return np.array([x[0]**2 + x[1] - 1], dtype=np.float64)
+# Define a nonlinear constraint: e.g., sum(x^3) - 1 <= 0
+def nonlinear_constraint(x, grad):
+    if grad.size > 0:
+        grad[:] = 3 * x**2
+    return np.sum(x**3) - 1
 
-    def jacobian(self, x):
-        # Derivative of constraint: [2*x0, 1]
-        return np.array([2 * x[0], 1.0], dtype=np.float64)
+# Create optimizer
+opt = nlopt.opt(nlopt.LD_MMA, n)  # LD_MMA supports nonlinear inequality constraints
 
-    def jacobianstructure(self):
-        # One constraint, two variables
-        return ([0, 0], [0, 1])
+# Set lower and upper bounds (optional)
+opt.set_lower_bounds([-10.0]*n)
+opt.set_upper_bounds([10.0]*n)
 
-# Variable bounds: [x0 >= 0, x0 <= 1.5], x1 unbounded
-x_l = np.array([0.0, -np.inf])
-x_u = np.array([1.5, np.inf])
+# Set objective function
+opt.set_min_objective(objective)
 
-# Constraint bounds: x0^2 + x1 - 1 >= 0 → c(x) ∈ [0, ∞)
-cl = np.array([0.0])
-cu = np.array([np.inf])
+# --- Add 768 linear inequality constraints: A_i x <= b_i ---
 
-x0 = np.array([0.5, 0.5])  # initial guess
+# Random A and b for demonstration purposes
+np.random.seed(0)
+A = np.random.randn(768, n)
+b = np.random.randn(768)
 
-nlp = cyipopt.Problem(
-    n=2,
-    m=1,
-    lb=x_l,
-    ub=x_u,
-    cl=cl,
-    cu=cu,
-    problem_obj=ToyProblem()
-)
+# Add each linear constraint individually
+for i in range(768):
+    def lin_constraint_factory(a_row, b_val):
+        return lambda x, grad: (
+            np.dot(a_row, x) - b_val
+            if grad.size == 0
+            else (grad.__setitem__(slice(None), a_row) or np.dot(a_row, x) - b_val)
+        )
+    opt.add_inequality_constraint(lin_constraint_factory(A[i], b[i]), 1e-8)
 
-nlp.add_option("print_level", 5)
-nlp.add_option("tol", 1e-6)
+# Add the nonlinear constraint
+opt.add_inequality_constraint(nonlinear_constraint, 1e-8)
 
-solution, info = nlp.solve(x0)
+# Set optimization parameters
+opt.set_xtol_rel(1e-6)
+opt.set_maxeval(1000)
 
-print("\n✅ Optimal solution:", solution)
-print("Objective value:", info["obj_val"])
+# Initial guess
+x0 = np.random.randn(n)
 
+# Run optimization
+try:
+    x_opt = opt.optimize(x0)
+    minf = opt.last_optimum_value()
+    print("Optimum x:", x_opt)
+    print("Minimum objective value:", minf)
+except nlopt.RoundoffLimited as e:
+    print("NLopt stopped due to roundoff errors:", str(e))
