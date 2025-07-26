@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from torchvision.datasets import MNIST
 import torchvision.transforms as transforms
 
@@ -81,3 +81,51 @@ def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./da
         return test_dataset
     
     return train_loader, val_loader, test_loader, dataset_name
+
+
+
+def select_confident_subdataset(model, test_dataset, p_threshold=0.7, batch_size=512, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load the model checkpoint
+    model = model.float()
+    model.eval()
+    model.to(device)
+
+    # Prepare the dataloader
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    correct_indices = []
+
+    with torch.no_grad():
+        index_offset = 0  # Tracks the global index in the dataset
+        for inputs, labels in test_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            outputs = model(inputs)
+            probs = torch.softmax(outputs, dim=1)
+            pred_probs, preds = torch.max(probs, dim=1)
+
+            correct_mask = preds == labels
+            confident_mask = pred_probs > p_threshold
+            selected_mask = correct_mask & confident_mask
+
+            # Get indices where selected_mask is True
+            selected_relative_indices = torch.nonzero(selected_mask).squeeze().cpu().numpy()
+
+            # Map to global indices in test_dataset
+            if selected_relative_indices.ndim == 0:
+                selected_relative_indices = [int(selected_relative_indices)]
+            else:
+                selected_relative_indices = selected_relative_indices.tolist()
+
+            correct_indices.extend(index_offset + i for i in selected_relative_indices)
+
+            index_offset += len(inputs)
+
+    # Create a Subset of the test dataset with the selected indices
+    selected_subset = Subset(test_dataset, correct_indices)
+
+    return selected_subset

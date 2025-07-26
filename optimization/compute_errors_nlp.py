@@ -4,6 +4,9 @@ import os
 import traceback
 
 from tqdm import tqdm
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+
 import argparse
 import yaml
 
@@ -22,7 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from propagate_intervals.train import parse_config
 from preprocessing import LossHead, create_comparing_network, eval_one_sample
 from utils.network import load_network, SmallConvNet, SmallDenseNet
-from utils.dataset import create_dataset
+from utils.dataset import create_dataset, select_confident_subdataset
 from linear_utils import create_c, create_upper_bounds, optimize
 from nonlinear_utils import *
 from linear_utils import TOL, TOL2
@@ -475,6 +478,7 @@ if __name__ == "__main__":
     print(f"Using device: {DEVICE}")
 
     model_name = config["model_name"]
+    model_path = os.path.join(model_name)
     start = config["start"]
     end = config["end"]
     bits = config["bits"]
@@ -482,11 +486,7 @@ if __name__ == "__main__":
     nb_iter =  config["nb_iter"]
     p = config["p"]
     output_dir = config["output_dir"]
-        
-    # Dataset
-    test_dataset = create_dataset(mode="experiment")
-    subset_dataset = Subset(test_dataset, list(range(start, end)))
-
+    
     # Networks
     NETWORK = os.path.join("checkpoints", model_name)
     MODEL = SmallDenseNet 
@@ -495,12 +495,22 @@ if __name__ == "__main__":
     # N = 1 * 28 * 28 
 
     net = load_network(MODEL, NETWORK, device=DEVICE)
+
+    net_copy = copy.deepcopy(net) # safe copy of net
+    test_dataset = create_dataset(mode="experiment")
+    test_dataset = select_confident_subdataset(net_copy, test_dataset, 
+                                               p_threshold=p, batch_size=512, device=DEVICE)
+    subset_dataset = Subset(test_dataset, list(range(start, end)))
+    print(f"Filtering test set: keeping correclty classified samples with prob p ≥ {p}...")
+    print(f"=> {len(test_dataset)} remaining samples.")
+    print(f"Processing {len(subset_dataset)} samples.")
+    
     net_approx = load_network(MODEL, NETWORK, device=DEVICE)
     comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
 
-    # Compute errors
-    for sample, _ in tqdm(subset_dataset, desc="Processing"):
-
+    # Optimization
+    for sample, _ in tqdm(subset_dataset, desc=f"Processing...", colour="green"):
+        
         sample = sample.to(DEVICE).double()
 
         if method == "scipy":
@@ -514,6 +524,7 @@ if __name__ == "__main__":
                                 device=DEVICE, tol=tol, verbose=verbose)
             
         elif method == "nlopt":
+
             try:
                 compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p,
                                     nb_constraints="all", start=start, end=end, loss_fn="cross-entropy", 
