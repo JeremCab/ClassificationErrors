@@ -494,14 +494,13 @@ if __name__ == "__main__":
                                                p_threshold=p, batch_size=512, device=DEVICE)
     subset_dataset = Subset(test_dataset, list(range(start, end)))
     print(f"Filtering test set: keeping correclty classified samples with prob p ≥ {p}...")
-    print(f"=> {len(test_dataset)} remaining samples.")
-    print(f"Processing {len(subset_dataset)} samples.")
+    print(f"=> {len(test_dataset)} remaining samples.\n")
     
     net_approx = load_network(MODEL, NETWORK, device=DEVICE)
     comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
 
     # Optimization
-    for i, (sample, _) in enumerate(tqdm(subset_dataset, desc=f"Processing...", colour="green")):
+    for i, (sample, _) in enumerate(tqdm(subset_dataset, desc="Processing...", colour="green")):
 
         sample = sample.to(DEVICE).double()
 

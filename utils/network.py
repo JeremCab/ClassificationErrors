@@ -2,26 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class SmallDenseNetOld(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(28*28, 2000),
-            nn.ReLU(),
-            nn.Dropout(0.8),
-            nn.Linear(2000, 1000),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-#            nn.Linear(256, 128),
-#            nn.ReLU(),
-            nn.Linear(1000, 10)
-        )
-    def forward(self, x):
-        return self.network(x)
 
-
-class SmallDenseNet(nn.Module):
+class VerySmallDenseNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.network = nn.Sequential(
@@ -35,6 +17,25 @@ class SmallDenseNet(nn.Module):
 #            nn.Linear(256, 128),
 #            nn.ReLU(),
             nn.Linear(128, 10)
+        )
+    def forward(self, x):
+        return self.network(x)
+
+
+class SmallDenseNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(28*28, 2000),
+            nn.ReLU(),
+            nn.Dropout(0.8),
+            nn.Linear(2000, 1000),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+#            nn.Linear(256, 128),
+#            nn.ReLU(),
+            nn.Linear(1000, 10)
         )
     def forward(self, x):
         return self.network(x)
@@ -59,7 +60,6 @@ class SmallConvNet(nn.Module):
         
     def forward(self, xb):
         return self.network(xb)
-
 
 
     

@@ -12,7 +12,7 @@ from tqdm import tqdm, trange
 # Don't need this line since "export PYTHONPATH=$(pwd)" in train_network.sh
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.dataset import create_dataset
-from utils.network import SimpleNet, DenseNet, SmallDenseNet, SmallConvNet
+from utils.network import SimpleNet, VerySmallDenseNet, SmallDenseNet, DenseNet, SmallConvNet
 
 
 def parse_config():
@@ -27,7 +27,7 @@ def parse_config():
     return config
 
 def train(net, train_data, val_data, optimizer, criterion, num_epochs, device):
-    for epoch in trange(num_epochs, desc="Epochs"):
+    for epoch in trange(num_epochs, desc="Epochs:", colour="green"):
 
         # --- Training ---
         net.train()
@@ -101,7 +101,13 @@ if __name__ == "__main__":
     train_data, val_data, test_data, dataset_name = create_dataset(batch_size=batch_size)
 
     # Train network
-    net = SmallDenseNet().to(DEVICE)
+    if config["model"] == "VerySmallDenseNet":
+        net = VerySmallDenseNet().to(DEVICE)
+    if config["model"] == "SmallDenseNet":
+        net = SmallDenseNet().to(DEVICE)
+    elif config["model"] == "DenseNet":
+        net = DenseNet().to(DEVICE)
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), weight_decay=0.0)
 
