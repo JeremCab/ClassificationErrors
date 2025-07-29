@@ -108,6 +108,7 @@ def check_saturations(net, input_1, input_2, verbose=False):
         print("********************")
 
 
+
 # ---------------------- #
 # Optimization functions #
 # ---------------------- #
@@ -433,36 +434,27 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
                                                                     W, b, loss_fn=loss_fn)
 
     # results: error_1, error_2, error_3 (should coincide) and polytope error
+    errors = real_error, computed_error, objective_value
     with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
-        f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-obj_val}\n")        
+        f.write(f"{errors[0]:.8f},{errors[1]:.8f},{errors[2]:.8f},{-obj_val}\n")        
 
-    if verbose:
+    # Checks x0
+    check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
+    check_bounds_and_constraints(opt, x0, xl, xu, cl, cu, 
+                                 W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
+                                 p=p, constr_tol=tol, verbose=verbose)
+    check_objective_gradient(opt, x0, W=W, b=b, verbose=verbose)
+    # check_constraint_jacobian(problem_obj, x0, verbose)
+    check_predictions_consistency(x0, comp_net, verbose=verbose)
+    # Checks x_opt
+    check_objective_value(x_opt, -obj_val, 
+                    net, net_approx, comp_net, 
+                    W, b, loss_fn=loss_fn, verbose=verbose)
+    check_bounds_and_constraints(opt, x_opt, xl, xu, cl, cu, 
+                                 W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
+                                 p=p, constr_tol=tol, verbose=verbose)
+    check_predictions_consistency(x_opt, comp_net, verbose=verbose)
 
-        print("\n-----------------------\n")
-
-        check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
-        check_bounds_and_constraints(opt, x0, xl, xu, cl, cu, 
-                                        W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
-                                        p=p, constr_tol=tol, verbose=verbose)
-        check_objective_gradient(opt, x0, W=W, b=b, verbose=verbose)
-        # check_constraint_jacobian(problem_obj, x0, verbose)
-        check_predictions_consistency(x0, comp_net)
-
-        print("\n-----------------------")
-
-        print("\nErrors at x0 (1,2,3) and maximal error (4)")
-        print(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-obj_val}")
-        print("\n✅ Optimal solution:", x_opt.shape)
-        print("Objective value:", obj_val)
-        check_bounds_and_constraints(opt, x_opt, xl, xu, cl, cu, 
-                                        W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
-                                        p=p, constr_tol=tol, verbose=verbose)
-        check_objective_value(x_opt, -obj_val, 
-                            net, net_approx, comp_net, 
-                            W, b, loss_fn=loss_fn, verbose=verbose)
-        check_predictions_consistency(x_opt, comp_net)
-
-        print("\n-----------------------\n")
 
 
 if __name__ == "__main__":
@@ -509,8 +501,8 @@ if __name__ == "__main__":
     comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
 
     # Optimization
-    for sample, _ in tqdm(subset_dataset, desc=f"Processing...", colour="green"):
-        
+    for i, (sample, _) in enumerate(tqdm(subset_dataset, desc=f"Processing...", colour="green")):
+
         sample = sample.to(DEVICE).double()
 
         if method == "scipy":
@@ -530,6 +522,6 @@ if __name__ == "__main__":
                                     nb_constraints="all", start=start, end=end, loss_fn="cross-entropy", 
                                     device=DEVICE, nb_iter=nb_iter, tol=tol, verbose=verbose)
             except Exception as e:
-                print(f"Exception occurred.")
+                print(f"❌ Exception occurred for sample {i}...\n")
                 traceback.print_exc()
 

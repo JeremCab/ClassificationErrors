@@ -284,6 +284,8 @@ def check_objective_value(solution, obj_value, net, net_approx, comp_net,
     assert np.isclose(obj_value_1, obj_value, rtol=1e-5, atol=1e-8), "❌ Objective value not consistent!"
 
     if verbose:
+        print("\n✅ Optimal solution:", solution.shape)
+        print("\n✅ Objective value:", obj_value)
         print(f"\n🔍 Ojective values (x2):\t {obj_value_1, obj_value}")
         print("✅ Consistency check passed.")
 
