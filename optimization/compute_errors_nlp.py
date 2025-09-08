@@ -460,61 +460,83 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
 # *** Worker function (must be at top-level, outside __main__) *** #
 
 
-def process_sample(args):
-    i, (sample, _), config = args
-    sample = sample.to(config["device"]).double()
+def process_sample_batch(args):
+    batch_idx, batch, config = args
+    results = []
+    for i, (sample, _) in batch:
+        sample = sample.to(config["device"]).double()
+        try:
+            if config["method"] == "scipy":
+                res = compute_error_scipy(
+                    config["net"], config["net_approx"], config["comp_net"], sample,
+                    config["output_dir"], config["p"],
+                    nb_constraints="all", start=config["start"], end=config["end"],
+                    loss_fn="cross-entropy", device=config["device"],
+                    verbose=config["verbose"]
+                )
 
-    try:
-        if config["method"] == "scipy":
-            return compute_error_scipy(
-                config["net"], config["net_approx"], config["comp_net"], sample,
-                config["output_dir"], config["p"],
-                nb_constraints="all", start=config["start"], end=config["end"],
-                loss_fn="cross-entropy", device=config["device"],
-                verbose=config["verbose"]
-            )
+            elif config["method"] == "ipopt":
+                res = compute_error_ipopt(
+                    config["net"], config["net_approx"], config["comp_net"], sample,
+                    config["output_dir"], config["p"],
+                    nb_constraints="all", start=config["start"], end=config["end"],
+                    loss_fn="cross-entropy", device=config["device"],
+                    tol=config["tol"], verbose=config["verbose"]
+                )
 
-        elif config["method"] == "ipopt":
-            return compute_error_ipopt(
-                config["net"], config["net_approx"], config["comp_net"], sample,
-                config["output_dir"], config["p"],
-                nb_constraints="all", start=config["start"], end=config["end"],
-                loss_fn="cross-entropy", device=config["device"],
-                tol=config["tol"], verbose=config["verbose"]
-            )
+            elif config["method"] == "nlopt":
+                res = compute_error_nlopt(
+                    config["net"], config["net_approx"], config["comp_net"], sample,
+                    config["output_dir"], config["p"],
+                    nb_constraints="all", start=config["start"], end=config["end"],
+                    loss_fn="cross-entropy", device=config["device"],
+                    nb_iter=config["nb_iter"], tol=config["tol"],
+                    verbose=config["verbose"]
+                )
+            results.append(res)
 
-        elif config["method"] == "nlopt":
-            return compute_error_nlopt(
-                config["net"], config["net_approx"], config["comp_net"], sample,
-                config["output_dir"], config["p"],
-                nb_constraints="all", start=config["start"], end=config["end"],
-                loss_fn="cross-entropy", device=config["device"],
-                nb_iter=config["nb_iter"], tol=config["tol"],
-                verbose=config["verbose"]
-            )
+        except Exception:
+            print(f"❌ Exception occurred for sample {i}...\n")
+            traceback.print_exc()
 
-    except Exception:
-        print(f"❌ Exception occurred for sample {i}...\n")
-        traceback.print_exc()
+    return results  # return results for this batch
 
 
-# *** Main script ***
+def chunked_iterable(iterable, batch_size):
+    """Yield successive chunks from iterable."""
+    it = iter(iterable)
+    while True:
+        batch = list()
+        try:
+            for _ in range(batch_size):
+                batch.append(next(it))
+        except StopIteration:
+            if batch:
+                yield batch
+            break
+        yield batch
+
+
+# =================== #
+# *** Main script *** #
+# =================== #
 
 
 if __name__ == "__main__":
 
     # Parameters
     config = parse_config()
-    config["tol"] = float(config["tol"])  # ensure float
+    config["tol"] = float(config["tol"])
     config["device"] = config.get("device", "cpu")
+    config["use_multiprocessing"] = config.get("use_multiprocessing", False)
+    config["batch_size"] = config.get("batch_size", 8)  # NEW: batch size for workers
 
     print(f"Using solver: {config['method']}")
     print(f"Using device: {config['device']}")
+    print(f"Multiprocessing: {config['use_multiprocessing']}")
+    print(f"Batch size: {config['batch_size']}")
 
     model_name = config["model_name"]
-    model_path = os.path.join(model_name)
-
-    # --- Networks ---
     NETWORK = os.path.join("checkpoints", model_name)
     MODEL = SmallDenseNet
 
@@ -534,26 +556,28 @@ if __name__ == "__main__":
     net_approx = load_network(MODEL, NETWORK, device=config["device"])
     comp_net = create_comparing_network(net, net_approx, bits=config["bits"], skip_magic=True)
 
-    # Store networks into config so workers can access them
     config["net"] = net
     config["net_approx"] = net_approx
     config["comp_net"] = comp_net
 
-
     # --- Optimization ---
     if config["use_multiprocessing"]:
-        # Parallel version
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            tasks = ((i, sample, config) for i, sample in enumerate(subset_dataset))
+            batches = [
+                (batch_idx, batch, config)
+                for batch_idx, batch in enumerate(
+                    chunked_iterable(enumerate(subset_dataset), config["batch_size"])
+                )
+            ]
             list(tqdm(
-                executor.map(process_sample, tasks),
-                total=len(subset_dataset),
+                executor.map(process_sample_batch, batches),
+                total=len(batches),
                 desc="Processing...",
                 colour="green"
             ))
     else:
-        # Sequential version (your original loop)
-        for i, (sample, _) in enumerate(tqdm(subset_dataset, 
-                                             desc="Processing...", 
-                                             colour="green")):
-            process_sample((i, (sample, _), config))
+        # Sequential fallback (process one by one)
+        for i, (sample, _) in enumerate(tqdm(subset_dataset, desc="Processing...", colour="green")):
+            process_sample_batch((i, [(i, (sample, _))], config))
+            
+
