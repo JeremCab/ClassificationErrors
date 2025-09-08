@@ -127,5 +127,5 @@ def select_confident_subdataset(model, test_dataset, p_threshold=0.7, batch_size
 
     # Create a Subset of the test dataset with the selected indices
     selected_subset = Subset(test_dataset, correct_indices)
-
+    
     return selected_subset

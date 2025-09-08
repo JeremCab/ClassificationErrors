@@ -2,6 +2,7 @@ import sys
 import os
 
 import traceback
+import concurrent.futures
 
 from tqdm import tqdm
 YELLOW = "\033[93m"
@@ -456,71 +457,103 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
     check_predictions_consistency(x_opt, comp_net, verbose=verbose)
 
 
+# *** Worker function (must be at top-level, outside __main__) *** #
+
+
+def process_sample(args):
+    i, (sample, _), config = args
+    sample = sample.to(config["device"]).double()
+
+    try:
+        if config["method"] == "scipy":
+            return compute_error_scipy(
+                config["net"], config["net_approx"], config["comp_net"], sample,
+                config["output_dir"], config["p"],
+                nb_constraints="all", start=config["start"], end=config["end"],
+                loss_fn="cross-entropy", device=config["device"],
+                verbose=config["verbose"]
+            )
+
+        elif config["method"] == "ipopt":
+            return compute_error_ipopt(
+                config["net"], config["net_approx"], config["comp_net"], sample,
+                config["output_dir"], config["p"],
+                nb_constraints="all", start=config["start"], end=config["end"],
+                loss_fn="cross-entropy", device=config["device"],
+                tol=config["tol"], verbose=config["verbose"]
+            )
+
+        elif config["method"] == "nlopt":
+            return compute_error_nlopt(
+                config["net"], config["net_approx"], config["comp_net"], sample,
+                config["output_dir"], config["p"],
+                nb_constraints="all", start=config["start"], end=config["end"],
+                loss_fn="cross-entropy", device=config["device"],
+                nb_iter=config["nb_iter"], tol=config["tol"],
+                verbose=config["verbose"]
+            )
+
+    except Exception:
+        print(f"❌ Exception occurred for sample {i}...\n")
+        traceback.print_exc()
+
+
+# *** Main script ***
+
 
 if __name__ == "__main__":
 
     # Parameters
     config = parse_config()
+    config["tol"] = float(config["tol"])  # ensure float
+    config["device"] = config.get("device", "cpu")
 
-    method = config["method"]
-    print(f"Using  solver: {method}")
-    verbose = config["verbose"]
-
-    DEVICE = config.get("device", "cpu")
-    print(f"Using device: {DEVICE}")
+    print(f"Using solver: {config['method']}")
+    print(f"Using device: {config['device']}")
 
     model_name = config["model_name"]
     model_path = os.path.join(model_name)
-    start = config["start"]
-    end = config["end"]
-    bits = config["bits"]
-    tol = float(config["tol"]) # needs casting
-    nb_iter =  config["nb_iter"]
-    p = config["p"]
-    output_dir = config["output_dir"]
-    
-    # Networks
+
+    # --- Networks ---
     NETWORK = os.path.join("checkpoints", model_name)
-    MODEL = SmallDenseNet 
-    # LAYERS = 4
-    # INPUT_SIZE = (1, 28, 28) 
-    # N = 1 * 28 * 28 
+    MODEL = SmallDenseNet
 
-    net = load_network(MODEL, NETWORK, device=DEVICE)
+    net = load_network(MODEL, NETWORK, device=config["device"])
+    net_copy = copy.deepcopy(net)
 
-    net_copy = copy.deepcopy(net) # safe copy of net
     test_dataset = create_dataset(mode="experiment")
-    test_dataset = select_confident_subdataset(net_copy, test_dataset, 
-                                               p_threshold=p, batch_size=512, device=DEVICE)
-    subset_dataset = Subset(test_dataset, list(range(start, end)))
-    print(f"Filtering test set: keeping correclty classified samples with prob p ≥ {p}...")
+    test_dataset = select_confident_subdataset(
+        net_copy, test_dataset,
+        p_threshold=config["p"], batch_size=512, device=config["device"]
+    )
+    subset_dataset = Subset(test_dataset, list(range(config["start"], config["end"])))
+
+    print(f"Filtering test set: keeping correctly classified samples with prob p ≥ {config['p']}...")
     print(f"=> {len(test_dataset)} remaining samples.\n")
-    
-    net_approx = load_network(MODEL, NETWORK, device=DEVICE)
-    comp_net = create_comparing_network(net, net_approx, bits=bits, skip_magic=True)
 
-    # Optimization
-    for i, (sample, _) in enumerate(tqdm(subset_dataset, desc="Processing...", colour="green")):
+    net_approx = load_network(MODEL, NETWORK, device=config["device"])
+    comp_net = create_comparing_network(net, net_approx, bits=config["bits"], skip_magic=True)
 
-        sample = sample.to(DEVICE).double()
+    # Store networks into config so workers can access them
+    config["net"] = net
+    config["net_approx"] = net_approx
+    config["comp_net"] = comp_net
 
-        if method == "scipy":
-            compute_error_scipy(net, net_approx, comp_net, sample, output_dir, p,
-                                nb_constraints="all", start=start, end=end, loss_fn="cross-entropy", 
-                                device=DEVICE, verbose=verbose)
-        
-        elif method == "ipopt":
-            compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, p,
-                                nb_constraints="all", start=start, end=end, loss_fn="cross-entropy", 
-                                device=DEVICE, tol=tol, verbose=verbose)
-            
-        elif method == "nlopt":
 
-            try:
-                compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p,
-                                    nb_constraints="all", start=start, end=end, loss_fn="cross-entropy", 
-                                    device=DEVICE, nb_iter=nb_iter, tol=tol, verbose=verbose)
-            except Exception as e:
-                print(f"❌ Exception occurred for sample {i}...\n")
-                traceback.print_exc()
-
+    # --- Optimization ---
+    if config["use_multiprocessing"]:
+        # Parallel version
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            tasks = ((i, sample, config) for i, sample in enumerate(subset_dataset))
+            list(tqdm(
+                executor.map(process_sample, tasks),
+                total=len(subset_dataset),
+                desc="Processing...",
+                colour="green"
+            ))
+    else:
+        # Sequential version (your original loop)
+        for i, (sample, _) in enumerate(tqdm(subset_dataset, 
+                                             desc="Processing...", 
+                                             colour="green")):
+            process_sample((i, (sample, _), config))
