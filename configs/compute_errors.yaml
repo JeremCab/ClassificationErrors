@@ -5,7 +5,7 @@ device: "cpu" # this part is on cpu for the moment...
 
 optimization: "non-linear"  # "linear", "non-linear"
 method: "nlopt"             # "scipy", "ipopt", "nlopt" (<- best!)
-use_multiprocessing: false  # true, false
+use_multiprocessing: true   # true, false
 batch_size: 4               # nb batches ≈ nb CPU cores  =>  batch_size ≈ nb samples / nb CPU cores
 
 p: 0.7
