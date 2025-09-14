@@ -7,40 +7,11 @@ CLASSES = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 
-# def create_dataset(train=True, batch_size=8, num_workers=2):
-#     dataset_name = "mnist"
-
-#     transform = transforms.Compose([
-#         transforms.ToTensor(),
-#         transforms.Normalize((0.1307,), (0.3081,))
-#     ])
-
-#     dataset = MNIST(root="./data", train=train, download=True, transform=transform)
-
-#     # dataset = CIFAR10(root='./data', train=train, download=True, transform=transform)
-
-
-#     if train:
-#         train_set, val_set = random_split(dataset, [50000, 10000])
-
-#         train_loader = DataLoader(
-#             train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers
-#         )
-
-#         val_loader = DataLoader(
-#             val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers
-#         )
-
-#         return train_loader, val_loader, dataset_name
-
-#     test_loader = DataLoader(
-#         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
-#     )
-#     return test_loader
-
-
-
-def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./data", mode="train"):
+def create_dataset(batch_size=512, 
+                   num_workers=0, 
+                   val_split=0.1, 
+                   data_root="./data", 
+                   mode="train"):
     """
     Creates and returns train, validation, and test data loaders for MNIST.
     
@@ -77,7 +48,7 @@ def create_dataset(batch_size=512, num_workers=0, val_split=0.1, data_root="./da
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    if mode != "train":
+    if mode == "experiment": # XXX
         return test_dataset
     
     return train_loader, val_loader, test_loader, dataset_name

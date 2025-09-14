@@ -1,6 +1,6 @@
 # configs/train.yaml
-device: "cuda"              # 'cuda', 'mps', 'cpu'
 model: "VerySmallDenseNet"  # 'VerySmallDenseNet', 'SmallDenseNet'
 batch_size: 1024
 num_epochs: 1000
+device: "cuda"              # 'cuda', 'mps', 'cpu'
 checkpoint_dir: checkpoints

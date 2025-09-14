@@ -1,0 +1,10 @@
+# configs/test.yaml
+checkpoint_dir: checkpoints
+checkpoint_model: mnist_verysmalldensenet_1024_1000.pt
+
+batch_size: 1024
+bits: 4             # test the original and the bits-approximated networks
+test_subset: [1]    # list of mnist digits retained in the test set (ex: [0, 1])
+device: "cuda"      # 'cuda', 'mps', 'cpu'
+
+output_dir: results
