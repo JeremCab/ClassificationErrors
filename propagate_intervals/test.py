@@ -67,12 +67,11 @@ if __name__ == "__main__":
     test_dataset = create_dataset(mode="experiment")
 
     if test_subset is not None:
-        print("Using subset:", test_subset)
         mask = torch.isin(test_dataset.targets, torch.tensor(test_subset))
         indices = torch.nonzero(mask, as_tuple=True)[0]
         test_dataset = Subset(test_dataset, indices)
-    else:
-        print("No subset specified")
+    print(f"test subset:", test_subset)
+
     
     print(f"Length of the test set: {len(test_dataset)}")
 
@@ -90,14 +89,14 @@ if __name__ == "__main__":
 
     net.load_state_dict(torch.load(os.path.join(checkpoint_dir, checkpoint_model)))
     criterion = nn.CrossEntropyLoss()
-
+    print("\nTesting original network...\n", net)
+    
     # Testing net 
-    print("\nTesting original netework:")
     test_loss_1, test_acc_1 = evaluate(net, test_loader, criterion, DEVICE)
 
     # Testing net approx
     net_approx = lower_precision(net, bits=bits)
-    print(f"Testing {bits}-bit rounded network:")
+    print(f"\nTesting {bits}-bit rounded network...\n", net_approx)
     test_loss_2, test_acc_2 = evaluate(net_approx, test_loader, criterion, DEVICE)
 
     output_dir = config["output_dir"]

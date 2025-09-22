@@ -3,6 +3,8 @@ import os
 import yaml
 import argparse
 
+import copy
+
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -80,7 +82,7 @@ def train(net, train_data, val_data,
         # --- Save best model ---
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            best_model_wts = net.state_dict()
+            best_model_wts = copy.deepcopy(net.state_dict())
 
         tqdm.write(f"Epoch {epoch+1:02d} - "
                    f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
@@ -88,7 +90,8 @@ def train(net, train_data, val_data,
 
     # --- Save final best model ---
     if best_model_wts is not None:
-        torch.save(best_model_wts, save_path)
+        net.load_state_dict(best_model_wts)   # restore best model
+        torch.save(net.state_dict(), save_path)
         print(f"Best model saved with val_acc={best_val_acc:.2f}% at {save_path}")
 
 
@@ -124,7 +127,7 @@ if __name__ == "__main__":
         net = DenseNet().to(DEVICE)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(net.parameters(), weight_decay=0.0)
+    optimizer = optim.Adam(net.parameters(), weight_decay=1e-4)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     model_name = net.__class__.__name__.lower()  # set model name

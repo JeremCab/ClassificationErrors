@@ -10,10 +10,10 @@ class VerySmallDenseNet(nn.Module):
             nn.Flatten(),
             nn.Linear(28*28, 64),
             nn.ReLU(),
-            nn.Dropout(0.8),
+            # nn.Dropout(0.8),
             nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            # nn.Dropout(0.5),
 #            nn.Linear(256, 128),
 #            nn.ReLU(),
             nn.Linear(32, 10)

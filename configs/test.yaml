@@ -1,6 +1,6 @@
 # configs/test.yaml
 checkpoint_dir: checkpoints
-checkpoint_model: mnist_verysmalldensenet_1024_1000.pt
+checkpoint_model: mnist_verysmalldensenet_32_30.pt
 
 batch_size: 1024
 bits: 4             # test the original and the bits-approximated networks

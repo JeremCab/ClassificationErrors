@@ -112,9 +112,23 @@ def optimize(c, A_ub, b_ub, A_eq, b_eq, l, u, verbose=False):
 # Helper functions #
 # ---------------- #
 
+def get_predictions(x0, comp_net):
+    """Get probs and labels of x0 predicted by the original and apporximated networks
+    gathered in the comparison network comp_net."""
+
+    preds = comp_net(torch.tensor(x0).reshape((1,-1))).reshape(-1).detach()
+    half = len(preds) // 2
+    logits_1 = F.softmax(preds[:half], dim=0)
+    logits_2 = F.softmax(preds[half:], dim=0)
+    prob_1, class_1 = torch.max(logits_1, dim=0)
+    prob_2, class_2 = torch.max(logits_2, dim=0)
+
+    return prob_1.item(), class_1.item(), logits_1, prob_2.item(), class_2.item(), logits_2
+
 
 def compute_errors(net, net_approx, comp_net, 
-                    sample, W, b, loss_fn="cross-entropy"):
+                   sample, W, b, 
+                   loss_fn="cross-entropy"):
     """
     Compute the error between net and net_approx at sample x0 in 3 different ways:
     (1) Objective value at x0
@@ -194,7 +208,6 @@ def check_objective_gradient(problem, x0, W=None, b=None, loss_fn="cross-entropy
     Check the gradient of the objective function via finite differences.
     """
 
-
     n = len(x0)
     if isinstance(problem, nlopt.opt):      # NLopt version
         f0 = objective_fn_np(x0, W, b, loss_fn=loss_fn)
@@ -268,7 +281,7 @@ def check_predictions_consistency(x0, comp_net, verbose=True):
     assert class_1 == class_2 , "❌ Constraints failed at x!"
 
     if verbose:
-        print(f"\n🔍 Predictions of x by original and approximated nets:\t {class_1, class_1}")
+        print(f"\n🔍 Predictions of x by original and approximated nets:\t {class_1, class_2}")
         print("✅ Predictions check passed.")
 
 

@@ -9,7 +9,7 @@ CLASSES = ('plane', 'car', 'bird', 'cat',
 
 def create_dataset(batch_size=512, 
                    num_workers=0, 
-                   val_split=0.1, 
+                   val_split=0.1,
                    data_root="./data", 
                    mode="train"):
     """
@@ -55,14 +55,19 @@ def create_dataset(batch_size=512,
 
 
 
-def select_confident_subdataset(model, test_dataset, p_threshold=0.7, batch_size=512, device=None):
+def select_confident_subdataset(net, test_dataset, p_threshold=0.7, batch_size=512, device=None):
+    """
+    Returns the sub-dataset composed of samples that are
+    - correctly classified by net (i.e., preds == labels)
+    - classidied with probability larger than p (i.e., max(probs) ≥ p)
+    """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load the model checkpoint
-    model = model.float()
-    model.eval()
-    model.to(device)
+    net = net.float()
+    net.eval()
+    net.to(device)
 
     # Prepare the dataloader
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -75,12 +80,12 @@ def select_confident_subdataset(model, test_dataset, p_threshold=0.7, batch_size
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            outputs = model(inputs)
+            outputs = net(inputs)
             probs = torch.softmax(outputs, dim=1)
             pred_probs, preds = torch.max(probs, dim=1)
 
             correct_mask = preds == labels
-            confident_mask = pred_probs > p_threshold
+            confident_mask = pred_probs >= p_threshold
             selected_mask = correct_mask & confident_mask
 
             # Get indices where selected_mask is True

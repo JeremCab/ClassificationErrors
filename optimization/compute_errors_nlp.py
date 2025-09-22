@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 
 import traceback
 import concurrent.futures
@@ -25,7 +26,7 @@ from torch.utils.data import Subset
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from propagate_intervals.train import parse_config
 from preprocessing import LossHead, create_comparing_network, eval_one_sample
-from utils.network import load_network, SmallConvNet, SmallDenseNet
+from utils.network import load_network, SmallConvNet, VerySmallDenseNet, SmallDenseNet
 from utils.dataset import create_dataset, select_confident_subdataset
 from linear_utils import create_c, create_upper_bounds, optimize
 from nonlinear_utils import *
@@ -116,9 +117,13 @@ def check_saturations(net, input_1, input_2, verbose=False):
 
 # *** Scipy *** #
 
-def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, p=0.7,
-                        nb_constraints="all", start=0, end=1, loss_fn="cross-entropy",
-                        device="cpu", verbose=False):
+def compute_error_scipy(net, net_approx, comp_net, sample, p=0.7,
+                        filename="results.csv", 
+                        nb_constraints="all", 
+                        loss_fn="cross-entropy", 
+                        device="cpu", 
+                        tol=1e-6, 
+                        verbose=False):
                 
         net = copy.deepcopy(net)                # deep copy for safety reasons
         net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
@@ -205,7 +210,7 @@ def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, p=0.7,
                                                                      W, b, loss_fn=loss_fn)
 
         # results: error_1, error_2, error_3 (should coincide) and polytope error
-        with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+        with open(filename, "a") as f:
             f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-res.fun}\n")
 
         if verbose:
@@ -262,9 +267,13 @@ def compute_error_scipy(net, net_approx, comp_net, sample, output_dir, p=0.7,
 # *** IPOPT *** #
 
 
-def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
-                        nb_constraints="all", start=0, end=1, loss_fn="cross-entropy", 
-                        device="cpu", tol=1e-6, verbose=False):
+def compute_error_ipopt(net, net_approx, comp_net, sample, p=0.7,
+                        filename="results.csv", 
+                        nb_constraints="all", 
+                        loss_fn="cross-entropy", 
+                        device="cpu", 
+                        tol=1e-6, 
+                        verbose=False):
 
     net = copy.deepcopy(net)                # deep copy for safety reasons
     net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
@@ -325,7 +334,7 @@ def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
                                                                  W, b, loss_fn=loss_fn)
 
     # results: error_1, error_2, error_3 (should coincide) and polytope error
-    with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
+    with open(filename, "a") as f:
         f.write(f"{real_error:.8f},{computed_error:.8f},{objective_value:.8f},{-info["obj_val"]}\n")        
 
     if verbose:
@@ -356,9 +365,14 @@ def compute_error_ipopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
 # *** NLopt *** #
 
 
-def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
-                    nb_constraints="all", start=0, end=1, loss_fn="cross-entropy", 
-                    device="cpu", nb_iter=15000, tol=1e-6, verbose=False):
+def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7, 
+                        filename="results.csv",
+                        nb_constraints="all", 
+                        loss_fn="cross-entropy", 
+                        device="cpu", 
+                        nb_iter=15000, 
+                        tol=1e-6, 
+                        verbose=False):
             
     net = copy.deepcopy(net)                # deep copy for safety reasons
     net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
@@ -430,14 +444,51 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
     dummy_grad = np.zeros_like(x_opt)
     obj_val = objective_fn_nlopt(W, b, loss_fn=loss_fn, verbose=verbose)(x_opt, dummy_grad)
 
-    # Compute sample error (3 methods)
-    objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
-                                                                    W, b, loss_fn=loss_fn)
+    # Compute predictions
+    prob_1, class_1, _, prob_2, class_2, _ = get_predictions(x0, comp_net)
+    prob_opt_1, class_opt_1, logits_opt_1, prob_opt_2, class_opt_2, logits_opt_2 = get_predictions(x_opt, comp_net)
 
+    # Compute sample error (3 methods)
     # results: error_1, error_2, error_3 (should coincide) and polytope error
+    objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
+                                                                 W, b, loss_fn=loss_fn) # XXX takes time, no need 3 methods!!!
     errors = real_error, computed_error, objective_value
-    with open(f"{output_dir}/results_{start}_{end}_nlp.csv", "a") as f:
-        f.write(f"{errors[0]:.8f},{errors[1]:.8f},{errors[2]:.8f},{-obj_val}\n")        
+
+    # Write results
+    header = (
+        "error_x0_a,"
+        "error_x0_b,"
+        "error_x0_c,"
+        "error_polytope,"
+        "net_prob_x0,"
+        "net_class_x0,"
+        "net_approx_prob_x0,"
+        "net_approx_class_x0,"
+        "net_prob_x_opt,"
+        "net_class_x_opt,"
+        "net_logits_x_opt,"
+        "net_approx_prob_x_opt,"
+        "net_approx_class_x_opt,"
+        "net_approx_logits_x_opt\n"
+    )
+
+    write_header = not os.path.exists(filename) or os.path.getsize(filename) == 0
+
+    with open(filename, "a") as f:
+        if write_header:
+            f.write(header)
+        f.write(
+            f"{errors[0]:.8f},"
+            f"{errors[1]:.8f},"
+            f"{errors[2]:.8f},"
+            f"{-obj_val:.8f},"
+            f"{prob_1:.8f},{class_1},"
+            f"{prob_2:.8f},{class_2},"
+            f"{prob_opt_1:.8f},{class_opt_1},"
+            f"\"{json.dumps(logits_opt_1.tolist())}\","
+            f"{prob_opt_2:.8f},{class_opt_2},"
+            f"\"{json.dumps(logits_opt_2.tolist())}\"\n"
+        )
 
     # Checks x0
     check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
@@ -446,7 +497,8 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
                                  p=p, constr_tol=tol, verbose=verbose)
     check_objective_gradient(opt, x0, W=W, b=b, verbose=verbose)
     # check_constraint_jacobian(problem_obj, x0, verbose)
-    check_predictions_consistency(x0, comp_net, verbose=verbose)
+    # check_predictions_consistency(x0, comp_net, verbose=verbose)      # equal predictions of N and Ñ not required
+    
     # Checks x_opt
     check_objective_value(x_opt, -obj_val, 
                     net, net_approx, comp_net, 
@@ -454,10 +506,10 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, output_dir, p=0.7,
     check_bounds_and_constraints(opt, x_opt, xl, xu, cl, cu, 
                                  W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
                                  p=p, constr_tol=tol, verbose=verbose)
-    check_predictions_consistency(x_opt, comp_net, verbose=verbose)
+    # check_predictions_consistency(x_opt, comp_net, verbose=verbose)   # equal predictions of N and Ñ not required
 
 
-# *** Worker function (must be at top-level, outside __main__) *** #
+# *** Worker function *** #
 
 
 def process_sample_batch(args):
@@ -468,29 +520,47 @@ def process_sample_batch(args):
         try:
             if config["method"] == "scipy":
                 res = compute_error_scipy(
-                    config["net"], config["net_approx"], config["comp_net"], sample,
-                    config["output_dir"], config["p"],
-                    nb_constraints="all", start=config["start"], end=config["end"],
-                    loss_fn="cross-entropy", device=config["device"],
+                    config["net"], 
+                    config["net_approx"], 
+                    config["comp_net"], 
+                    sample, 
+                    config["p"],
+                    filename = config["filename"], 
+                    nb_constraints="all", 
+                    loss_fn="cross-entropy", 
+                    device=config["device"],
+                    tol=config["tol"], 
                     verbose=config["verbose"]
                 )
 
             elif config["method"] == "ipopt":
                 res = compute_error_ipopt(
-                    config["net"], config["net_approx"], config["comp_net"], sample,
-                    config["output_dir"], config["p"],
-                    nb_constraints="all", start=config["start"], end=config["end"],
-                    loss_fn="cross-entropy", device=config["device"],
-                    tol=config["tol"], verbose=config["verbose"]
+                    config["net"], 
+                    config["net_approx"], 
+                    config["comp_net"], 
+                    sample, 
+                    config["p"],
+                    filename = config["filename"], 
+                    nb_constraints="all", 
+                    loss_fn="cross-entropy", 
+                    device=config["device"],
+                    tol=config["tol"], 
+                    verbose=config["verbose"]
                 )
 
             elif config["method"] == "nlopt":
                 res = compute_error_nlopt(
-                    config["net"], config["net_approx"], config["comp_net"], sample,
-                    config["output_dir"], config["p"],
-                    nb_constraints="all", start=config["start"], end=config["end"],
-                    loss_fn="cross-entropy", device=config["device"],
-                    nb_iter=config["nb_iter"], tol=config["tol"],
+                    config["net"], 
+                    config["net_approx"], 
+                    config["comp_net"], 
+                    sample, 
+                    config["p"],
+                    filename = config["filename"], 
+                    nb_constraints="all", 
+                    loss_fn="cross-entropy", 
+                    device=config["device"],
+                    nb_iter=config["nb_iter"], 
+                    tol=config["tol"],
                     verbose=config["verbose"]
                 )
             results.append(res)
@@ -525,32 +595,53 @@ def chunked_iterable(iterable, batch_size):
 if __name__ == "__main__":
 
     # Parameters
+    MODEL_CLASSES = {
+        "SmallDenseNet": SmallDenseNet,
+        "VerySmallDenseNet": VerySmallDenseNet
+    }
+        
     config = parse_config()
     config["tol"] = float(config["tol"])
     config["device"] = config.get("device", "cpu")
-    config["use_multiprocessing"] = config.get("use_multiprocessing", False)
+    config["multiprocessing"] = config.get("multiprocessing", False)
     config["batch_size"] = config.get("batch_size", 8)  # NEW: batch size for workers
 
     print(f"Using solver: {config['method']}")
     print(f"Using device: {config['device']}")
-    print(f"Multiprocessing: {config['use_multiprocessing']}")
+    print(f"Multiprocessing: {config['multiprocessing']}")
     print(f"Batch size: {config['batch_size']}")
-
-    model_name = config["model_name"]
-    NETWORK = os.path.join("checkpoints", model_name)
-    MODEL = SmallDenseNet
+    
+    MODEL = MODEL_CLASSES[config["model_class"]]
+    NETWORK = os.path.join("checkpoints", config["model_name"])
 
     net = load_network(MODEL, NETWORK, device=config["device"])
     net_copy = copy.deepcopy(net)
 
+    test_subset = config['test_subset']
     test_dataset = create_dataset(mode="experiment")
+
+    if test_subset is not None:
+        mask = torch.isin(test_dataset.targets, torch.tensor(test_subset))
+        indices = torch.nonzero(mask, as_tuple=True)[0]
+        test_dataset = Subset(test_dataset, indices)
+    print(f"test subset:", test_subset)
+
     test_dataset = select_confident_subdataset(
         net_copy, test_dataset,
-        p_threshold=config["p"], batch_size=512, device=config["device"]
+        p_threshold=config["p"], 
+        batch_size=512, 
+        device=config["device"]
     )
-    subset_dataset = Subset(test_dataset, list(range(config["start"], config["end"])))
 
-    print(f"Filtering test set: keeping correctly classified samples with prob p ≥ {config['p']}...")
+    if config["end"] is not None:
+        subset_dataset = Subset(test_dataset, list(range(config["start"], config["end"])))
+    else:
+        subset_dataset = test_dataset
+
+    print(f"""
+Filtering test set: keeping test samples that are correctly classified\
+by the original network with prob p ≥ {config['p']}"""
+)
     print(f"=> {len(test_dataset)} remaining samples.\n")
 
     net_approx = load_network(MODEL, NETWORK, device=config["device"])
@@ -560,8 +651,17 @@ if __name__ == "__main__":
     config["net_approx"] = net_approx
     config["comp_net"] = comp_net
 
+    def none2all(param):
+        return "all" if param is None else param
+    start = config['start']
+    end_ = none2all(config['end'])
+    test_subset_ = none2all(config['test_subset'])
+    p = config['p']
+    filename = f"results_{start}_{end_}_testsubset_{test_subset_}_p={p}_nlp.csv"
+    config["filename"] = os.path.join(config['output_dir'], filename)
+
     # --- Optimization ---
-    if config["use_multiprocessing"]:
+    if config["multiprocessing"]:
         with concurrent.futures.ProcessPoolExecutor() as executor:
             batches = [
                 (batch_idx, batch, config)
@@ -581,3 +681,11 @@ if __name__ == "__main__":
             process_sample_batch((i, [(i, (sample, _))], config))
             
 
+
+# √ load correct network
+# √ debug code
+# √ implement dataset selection
+# √ implement saving x0 predictions
+# √ fix start-end thing (add all option)...
+# csv column names
+# implement iconip results (notebook)
