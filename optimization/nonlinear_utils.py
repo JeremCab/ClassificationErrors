@@ -123,6 +123,12 @@ def get_predictions(x0, comp_net):
     prob_1, class_1 = torch.max(logits_1, dim=0)
     prob_2, class_2 = torch.max(logits_2, dim=0)
 
+    # if class_1 != 1:
+    #     print("class_opt_1 (inside get_predictions): ", class_1)
+    #     print("logits_1", logits_1)
+    #     print("logits_2", logits_2)
+    #     print(class_1, class_2, "\n")
+
     return prob_1.item(), class_1.item(), logits_1, prob_2.item(), class_2.item(), logits_2
 
 
@@ -171,7 +177,7 @@ def check_shapes_consistency(A, x0, cl, cu, xl, xu, verbose=True):
 
 def check_bounds_and_constraints(problem, x0, xl, xu, cl, cu, 
                                  W_1=None, b_1=None, A_reduced=None, bounds=None, 
-                                 p=0.7, constr_tol=1e-8, verbose=True):
+                                 p=0.7, c=0, constr_tol=1e-8, verbose=True):
     """
     Check if x is within variable bounds and satisfies constraints.
     """
@@ -186,7 +192,7 @@ def check_bounds_and_constraints(problem, x0, xl, xu, cl, cu,
             ])
     elif isinstance(problem, nlopt.opt):        # NLopt version
         c_js = constraints_xj_s(x0, A_reduced, bounds)
-        c_0 = constraint_xi_0(x0, W_1, b_1, p)
+        c_0 = constraint_xi_0(x0, W_1, b_1, p, c)
         c_val = np.concatenate([c_js, np.array([c_0])])
 
     constraints_satisfied = np.all(c_val >= cl - constr_tol) and np.all(c_val <= cu) # tolerence 1e-8
@@ -272,7 +278,7 @@ def check_constraint_jacobian(problem, x0, tol=1e-4, eps=1e-6, verbose=True):
 
 
 def check_predictions_consistency(x0, comp_net, verbose=True):
-    """Check predictions of x0 predicted by the original and apporximated networks."""
+    """Check predictions of x0 by the original and apporximated networks."""
 
     pred = comp_net(torch.tensor(x0).reshape((1,-1))).reshape(-1)
     half = len(pred) // 2
@@ -376,13 +382,13 @@ def objective_coeff(comp_net, sample, mode="np"):
         W = W.detach().cpu().numpy().astype(np.float64) # to numpy
         b = b.detach().cpu().numpy().astype(np.float64) # to numpy
 
-    half = W.shape[0] //2       # total output size (e.g., 20)
+    half = W.shape[0] // 2       # total output size (e.g., 20)
 
     W_1 = W[:half, :].numpy() if mode != "np" else W[:half, :]  # first half weights for 'constraint_xi_0'
-    # W_2 = W[half:, :]           # second half weights
+    # W_2 = W[half:, :]          # second half weights
 
     b_1 = b[:half].numpy() if mode != "np" else b[:half]        # first half biases for 'constraint_xi_0'
-    # b_2 = b[half:]              # second half biases
+    # b_2 = b[half:]             # second half biases
 
     return W, b, W_1, b_1
 
@@ -642,33 +648,45 @@ def grad_fn_torch(x, WW, bb, loss_fn="cross-entropy"):
 # ----------- #
 
 
-def constraint_xi_0(x, W_1, b_1, p=0.7):
-    """Compute constraint xi_0 ≤ 0 Eq. (8) in short document."""
+def constraint_xi_0(x, W_1, b_1, p=0.7, c=0):
+    """
+    Compute constraint xi_0 ≤ 0 Eq. (8) in short document.
+    NOTE: the constraint is evaluated with respect to the fixed class c.
+    The class c is determined in davance by the sample x_0 under consideration: 
+    c = argmax(Net(x_0))
+    """
     logits = W_1 @ x + b_1
-    xi_c = np.max(logits)
-    xi_0 = np.sum(np.exp(logits - xi_c)) - 1/p
+    # xi_c = np.max(logits)     # OLD
+    xi_c = logits[c]            # NEW
+    xi_0 = np.sum(np.exp(logits - xi_c)) - (1./p)
 
     return -xi_0  # flip sign for non-negative constraint
 
 
-def dummy_constraint_xi_0(x, W_1, b_1, p=0.7):
+def dummy_constraint_xi_0(x, W_1, b_1, p=0.7, c=0):
     return 1.0  # Always satisfied
 
 
-def constraint_xi_0_torch(x, W_1, b_1, p=0.7):
-    """Compute constraint xi_0 ≤ 0 Eq. (8) in short document."""
-    logits = W_1 @ x + b_1            # shape: (C,)
-    xi_c = torch.max(logits)
-    xi_0 = torch.sum(torch.exp(logits - xi_c)) - 1.0 / p
+def constraint_xi_0_torch(x, W_1, b_1, p=0.7, c=0):
+    """
+    Compute constraint xi_0 ≤ 0 Eq. (8) in short document.
+    NOTE: the constraint is evaluated with respect to the fixed class c.
+    The class c is determined in davance by the sample x_0 under consideration: 
+    c = argmax(Net(x_0))
+    """
+    logits = W_1 @ x + b_1          # shape: (C,)
+    # xi_c = torch.max(logits)      # OLD
+    xi_c = logits[c]                # NEW
+    xi_0 = torch.sum(torch.exp(logits - xi_c)) - (1.0 / p)
 
     return -xi_0  # flipped sign for non-negative constraint
 
 
-def jac_constraint_xi_0(x, W_1, b_1, p=0.7):
+def jac_constraint_xi_0(x, W_1, b_1, p=0.7, c=0):
     """
     Compute the Jacobian (gradient) of the constraint:
     xi_0(x) = sum_j (e^{xi_j - xi_c}) - 1/p
-    Jiri's Eq. (23).
+    Jiri's Eq. (22).
 
     Returns:
         grad: ndarray of shape (D,)
@@ -676,30 +694,29 @@ def jac_constraint_xi_0(x, W_1, b_1, p=0.7):
     W = W_1
 
     xi = W @ x + b_1
-    c = np.argmax(xi)
+    # c = np.argmax(xi)             # NEW
     xi_c = xi[c]
 
-    exp_terms = np.exp(xi - xi_c)  # shape: (C,)
+    exp_terms = np.exp(xi - xi_c)   # shape: (C,)
     weighted_sum = W.T @ exp_terms  # shape: (D,)
     grad = weighted_sum - W[c, :] * np.sum(exp_terms)
-
 
     # Return gradient of -xi_0 (for scipy's 'ineq' form)
     return -grad
 
 
-def jac_dummy_constraint_xi_0(x, W_1, b_1, p=0.7):
+def jac_dummy_constraint_xi_0(x, W_1, b_1, p=0.7, c=0):
     return np.zeros_like(x)  # Gradient of a constant function
 
 
-def constraint_xi_0_nlopt(x, grad, W_1, b_1, p=0.7):
+def constraint_xi_0_nlopt(x, grad, W_1, b_1, p=0.7, c=0):
     """
     Wrapper for constraint_xi_0 and jac_constraint_xi_0 for NLopt.
     reverse signs for constraints of the for A @ x + b ≤ 0
     """
     if grad.size > 0:
-        grad[:] = -jac_constraint_xi_0(x, W_1, b_1, p)
-    return -constraint_xi_0(x, W_1, b_1, p)
+        grad[:] = -jac_constraint_xi_0(x, W_1, b_1, p, c)
+    return -constraint_xi_0(x, W_1, b_1, p, c)
 
 
 def constraints_xj_s(x, A_reduced, bounds):
@@ -733,7 +750,7 @@ def jac_constraints_xj_s(x, A_reduced, bounds):
 
 class NonLinearProblemOld(object):
 
-        def __init__(self, W, b, W_1, b_1, A, bounds, p, loss_fn="cross-entropy"):
+        def __init__(self, W, b, W_1, b_1, A, bounds, p, c, loss_fn="cross-entropy"):
             self.W = W
             self.b = b
             self.W_1 = W_1
@@ -741,6 +758,7 @@ class NonLinearProblemOld(object):
             self.A = A
             self.bounds = bounds
             self.p = p
+            self.c = c
             self.n = W.shape[1]  # Number of decision variables
             self.loss_fn = loss_fn
 
@@ -752,12 +770,12 @@ class NonLinearProblemOld(object):
 
         def constraints(self, x):
             linear_part = constraints_xj_s(x, self.A, self.bounds) 
-            nonlinear_part = constraint_xi_0(x, self.W_1, self.b_1, self.p)
+            nonlinear_part = constraint_xi_0(x, self.W_1, self.b_1, self.p, self.c)
             return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
 
         def jacobian(self, x):
             jac_xj = jac_constraints_xj_s(x, self.A, self.bounds)
-            jac_x0 = jac_constraint_xi_0(x, self.W_1, self.b_1, self.p)
+            jac_x0 = jac_constraint_xi_0(x, self.W_1, self.b_1, self.p, self.c)
             full_jac = vstack([jac_xj, jac_x0])  # shape: (m+1, n)
             return full_jac.data.astype(np.float64)
 
@@ -767,14 +785,14 @@ class NonLinearProblemOld(object):
         
         def jacobianstructure(self):
             A_sparse = csr_matrix(self.A)
-            jac_nl = jac_constraint_xi_0(np.zeros(self.n), self.W_1, self.b_1, self.p)  # dummy x
+            jac_nl = jac_constraint_xi_0(np.zeros(self.n), self.W_1, self.b_1, self.p, self.c)  # dummy x
             full_jac = vstack([A_sparse, jac_nl])
             return full_jac.nonzero()
 
 
 class NonLinearProblem(object):
 
-    def __init__(self, W, b, W_1, b_1, A, bounds, p, device='cpu', loss_fn="cross-entropy"):
+    def __init__(self, W, b, W_1, b_1, A, bounds, p, c, device='cpu', loss_fn="cross-entropy"):
         # Convert to torch tensors on the specified device
         self.device = device
         self.W = torch.tensor(W, dtype=torch.float64, device=device)
@@ -794,6 +812,7 @@ class NonLinearProblem(object):
 
         self.bounds = bounds
         self.p = p
+        self.c = c
         self.n = W.shape[1]
 
         rows_lin, cols_lin = self.jac_structure_indices
@@ -836,12 +855,12 @@ class NonLinearProblem(object):
         # Keep your numpy constraints as before, since constraints functions appear numpy-based
         # start = time.time()
         linear_part = constraints_xj_s(x, self.A, self.bounds)
-        nonlinear_part = constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p)
+        nonlinear_part = constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p, self.c)
         return np.concatenate([linear_part, [nonlinear_part]]).astype(np.float64)
 
     def jacobian(self, x):
         # start = time.time()
-        jac_x0 = jac_constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p).astype(np.float64)
+        jac_x0 = jac_constraint_xi_0(x, self.W_1_np, self.b_1_np, self.p, self.c).astype(np.float64)
         return np.concatenate([self.jac_values, jac_x0])
 
     
@@ -897,7 +916,7 @@ class NonLinearProblem(object):
 #             'type': 'ineq', 
 #             'fun': constraint_xi_0,
 #             'jac' : jac_constraint_xi_0, # provide analytic Jacobian
-#             'args': (W_1, b_1, p)
+#             'args': (W_1, b_1, p, c)
 #             },
 #             {
 #             'type': 'ineq', 
@@ -987,12 +1006,12 @@ class NonLinearProblem(object):
 
 #             # check jacobians
 #             def wrapper_1(x):
-#                 return constraint_xi_0(x, W_1, b_1, p)
+#                 return constraint_xi_0(x, W_1, b_1, p, c)
 #             def wrapper_2(x):
 #                 return constraints_xj_s(x, A_reduced, bounds)
             
 #             J_numeric_1 = approx_derivative(wrapper_1, x0)
-#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p)
+#             J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p, c)
 #             print("🔍 Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
 
 #             J_numeric_2 = approx_derivative(wrapper_2, x0)
@@ -1041,7 +1060,7 @@ class NonLinearProblem(object):
 #     cl = np.concatenate([np.zeros(m - 1), [0.0]])
 #     cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
     
-#     problem_obj = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds, p=p)
+#     problem_obj = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds, p=p, c=c)
 
 #     nlp = cyipopt.Problem(
 #             n=n,    # nb of variables
@@ -1165,7 +1184,7 @@ class NonLinearProblem(object):
 #         return None # nlopt requirement
 
 #     opt.add_inequality_mconstraint(linear_constraints_vectorized, [tol] * A_minus.shape[0])
-#     opt.add_inequality_constraint(lambda x, grad: constraint_xi_0_nlopt(x, grad, W_1, b_1, p=p), tol)
+#     opt.add_inequality_constraint(lambda x, grad: constraint_xi_0_nlopt(x, grad, W_1, b_1, p=p, c=c), tol)
 
 #     # Initial guess
 #     x0 = sample.flatten().cpu().numpy()

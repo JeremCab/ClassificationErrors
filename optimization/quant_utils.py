@@ -48,7 +48,7 @@ from utils.network import SmallDenseNet
         
 #         return network
 
-# UPDATED CLASS   XXX
+# UPDATED CLASS
 class Quantization:
     def __init__(self, net: torch.nn.Module, bits=8, device=None):
         # Set device; default to the device of the network
@@ -107,10 +107,10 @@ class Quantization:
 #         return net.half().double()
 #     else:
 #         quant = Quantization(net, bits)
-#         return quant.convert(net).to(device)    # .cuda()   # XXX
+#         return quant.convert(net).to(device)    # .cuda()
 
 
-# UPDATED FUNCTION  XXX
+# UPDATED FUNCTION
 def lower_precision(net, bits=16):
     device = next(net.parameters()).device
 

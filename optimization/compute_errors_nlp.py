@@ -158,8 +158,8 @@ def compute_error_scipy(net, net_approx, comp_net, sample, p=0.7,
             {
             'type': 'ineq', 
             'fun': constraint_xi_0,
-            'jac' : jac_constraint_xi_0, # provide analytic Jacobian
-            'args': (W_1, b_1, p)
+            'jac' : jac_constraint_xi_0,    # provide analytic Jacobian
+            'args': (W_1, b_1, p, c)        # NOT IMPLEMENTED
             },
             {
             'type': 'ineq', 
@@ -249,12 +249,12 @@ def compute_error_scipy(net, net_approx, comp_net, sample, p=0.7,
 
             # check jacobians
             def wrapper_1(x):
-                return constraint_xi_0(x, W_1, b_1, p)
+                return constraint_xi_0(x, W_1, b_1, p, c)           # NOT IMPLEMENTED
             def wrapper_2(x):
                 return constraints_xj_s(x, A_reduced, bounds)
             
             J_numeric_1 = approx_derivative(wrapper_1, x0)
-            J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p)
+            J_analytic_1 = jac_constraint_xi_0(x0, W_1, b_1, p, c)  # NOT IMPLEMENTED
             print("🔍 Jacobian #1 error:", np.max(np.abs(J_numeric_1 - J_analytic_1)))
 
             J_numeric_2 = approx_derivative(wrapper_2, x0)
@@ -307,7 +307,7 @@ def compute_error_ipopt(net, net_approx, comp_net, sample, p=0.7,
     cl = np.concatenate([np.zeros(m - 1), [0.0]])
     cu = np.concatenate([np.full(m - 1, np.inf), [np.inf]])
     
-    problem_obj = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds, p=p)
+    problem_obj = NonLinearProblem(W, b, W_1, b_1, A_reduced, bounds, p=p, c=c)  # NOT IMPLEMENTED
 
     nlp = cyipopt.Problem(
             n=n,    # nb of variables
@@ -365,7 +365,7 @@ def compute_error_ipopt(net, net_approx, comp_net, sample, p=0.7,
 # *** NLopt *** #
 
 
-def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7, 
+def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
                         filename="results.csv",
                         nb_constraints="all", 
                         loss_fn="cross-entropy", 
@@ -374,11 +374,13 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
                         tol=1e-6, 
                         verbose=False):
             
-    net = copy.deepcopy(net)                # deep copy for safety reasons
-    net_approx = copy.deepcopy(net_approx)  # deep copy for safety reasons
-    comp_net = copy.deepcopy(comp_net)      # deep copy for safety reasons
+    net = copy.deepcopy(net)                    # deep copy for safety reasons
+    net_approx = copy.deepcopy(net_approx)      # deep copy for safety reasons
+    comp_net = copy.deepcopy(comp_net)          # deep copy for safety reasons
 
     sample = sample.to(device).double()
+    pred = torch.softmax(net(sample), dim=1)    # logits predicted by N
+    c = int(torch.argmax(pred))                 # class predicted by N
 
     # Start timer
     start_time = time.time()
@@ -386,6 +388,11 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
     # Non-Linear Problem (NLP)
     # Coefficients
     W, b, W_1, b_1 = objective_coeff(comp_net, sample, mode="np")
+
+    # print("net(sample)\n", net(sample))
+    # print("comp_net(sample)\n", comp_net(sample)[0, :10])
+    # print("W_1 @ x + b_1", W_1 @ sample.flatten().cpu().numpy() + b_1, "\n\n")
+
     A_reduced, bounds = constraints_coeff(comp_net, sample)
     if nb_constraints != "all":
         A_reduced = A_reduced[:nb_constraints]
@@ -436,7 +443,7 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
         return None # nlopt requirement
 
     opt.add_inequality_mconstraint(linear_constraints_vectorized, [tol] * A_minus.shape[0])
-    opt.add_inequality_constraint(lambda x, grad: constraint_xi_0_nlopt(x, grad, W_1, b_1, p=p), tol)
+    opt.add_inequality_constraint(lambda x, grad: constraint_xi_0_nlopt(x, grad, W_1, b_1, p=p, c=c), tol)
 
     # Initial guess
     x0 = sample.flatten().cpu().numpy()
@@ -447,11 +454,17 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
     # Compute predictions
     prob_1, class_1, _, prob_2, class_2, _ = get_predictions(x0, comp_net)
     prob_opt_1, class_opt_1, logits_opt_1, prob_opt_2, class_opt_2, logits_opt_2 = get_predictions(x_opt, comp_net)
+    
+    # print("========= START ========")
+    # print("part 1: class_opt_1, c =", class_opt_1, c)
+    # if class_opt_1 != c:
+    #     print("class_opt_1 = N(x_opt), c:", class_opt_1, c)
+    #     print("N(x_opt) =", class_opt_1)
 
     # Compute sample error (3 methods)
     # results: error_1, error_2, error_3 (should coincide) and polytope error
     objective_value, real_error, computed_error = compute_errors(net, net_approx, comp_net, sample, 
-                                                                 W, b, loss_fn=loss_fn) # XXX takes time, no need 3 methods!!!
+                                                                 W, b, loss_fn=loss_fn) # takes time, no need 3 methods!
     errors = real_error, computed_error, objective_value
 
     # Write results
@@ -494,10 +507,10 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
     check_shapes_consistency(A_reduced, x0, cl, cu, xl, xu, verbose)
     check_bounds_and_constraints(opt, x0, xl, xu, cl, cu, 
                                  W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
-                                 p=p, constr_tol=tol, verbose=verbose)
+                                 p=p, c=c, constr_tol=tol, verbose=verbose)
     check_objective_gradient(opt, x0, W=W, b=b, verbose=verbose)
     # check_constraint_jacobian(problem_obj, x0, verbose)
-    # check_predictions_consistency(x0, comp_net, verbose=verbose)      # equal predictions of N and Ñ not required
+    # check_predictions_consistency(x0, comp_net, verbose=verbose)          # equal predictions of N and Ñ not required
     
     # Checks x_opt
     check_objective_value(x_opt, -obj_val, 
@@ -505,7 +518,14 @@ def compute_error_nlopt(net, net_approx, comp_net, sample, p=0.7,
                     W, b, loss_fn=loss_fn, verbose=verbose)
     check_bounds_and_constraints(opt, x_opt, xl, xu, cl, cu, 
                                  W_1=W_1, b_1=b_1, A_reduced=A_reduced, bounds=bounds, 
-                                 p=p, constr_tol=tol, verbose=verbose)
+                                 p=p, c=c, constr_tol=tol, verbose=verbose)
+    
+    # print("part 2: class_opt_1, c =", class_opt_1, c)
+    # if class_opt_1 != c:
+    #     print("class_opt_1 = N(x_opt), c:", class_opt_1, c)
+    #     print("class c", constraint_xi_0(x_opt, W_1, b_1, p, c))
+    #     print(constraint_xi_0(x_opt, W_1, b_1, p, c) >= cl[-1] - tol)
+    # print("========= END ========\n\n")
     # check_predictions_consistency(x_opt, comp_net, verbose=verbose)   # equal predictions of N and Ñ not required
 
 
@@ -639,7 +659,7 @@ if __name__ == "__main__":
         subset_dataset = test_dataset
 
     print(f"""
-Filtering test set: keeping test samples that are correctly classified\
+Filtering test set: keeping test samples that are correctly classified \
 by the original network with prob p ≥ {config['p']}"""
 )
     print(f"=> {len(test_dataset)} remaining samples.\n")

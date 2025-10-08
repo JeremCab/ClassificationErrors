@@ -48,7 +48,7 @@ def create_dataset(batch_size=512,
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    if mode == "experiment": # XXX
+    if mode == "experiment":
         return test_dataset
     
     return train_loader, val_loader, test_loader, dataset_name

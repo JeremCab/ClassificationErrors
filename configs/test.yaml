@@ -4,7 +4,7 @@ checkpoint_model: mnist_verysmalldensenet_32_30.pt
 
 batch_size: 1024
 bits: 4             # test the original and the bits-approximated networks
-test_subset: [1]    # list of mnist digits retained in the test set (ex: [0, 1])
+test_subset: [1]    # list of mnist digits retained in the test set (ex: null, [0, 1])
 device: "cuda"      # 'cuda', 'mps', 'cpu'
 
 output_dir: results

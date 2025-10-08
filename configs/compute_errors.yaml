@@ -1,25 +1,17 @@
-# configs/compute_errors.yaml
-
-# === Model === #
-model_class     : VerySmallDenseNet
-model_name      : mnist_verysmalldensenet_32_30.pt
-device          : "cpu" # this part is on cpu for the moment...
-
-# === Optimization === #
-optimization    : "non-linear"  # "linear", "non-linear"
-method          : "nlopt"       # "scipy", "ipopt", "nlopt" (<- best!)
-multiprocessing : true          # true, false
-batch_size      : 4             # nb batches ≈ nb CPU cores  =>  batch_size ≈ nb samples / nb CPU cores
-p               : 0.95
-bits            : 4
-tol             : 1e-06
-nb_iter         : 50000
-verbose         : false
-
-# === Test set === #
-test_subset     : [1]           # list of mnist digits retained in the test set (ex: null, [0, 1])
-start           : 0             # integer n -> start index (ignored if end == null)
-end             : null          # null -> all dataset or integer n -> end index
-
-# === Results === #
-output_dir      : results
+model_class: VerySmallDenseNet
+model_name: mnist_verysmalldensenet_32_30.pt
+device: cpu
+optimization: non-linear
+method: nlopt
+multiprocessing: true
+batch_size: 4
+p: 0.9
+bits: 4
+tol: 1.0e-15
+nb_iter: 100000
+verbose: false
+test_subset:
+  - 1
+start: 0
+end: null
+output_dir: results

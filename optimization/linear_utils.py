@@ -41,7 +41,7 @@ def create_upper_bounds(net, inputs):
         if i == 0:
             target = subnet
         else:
-            target = squeeze_network(prune_network(subnet, saturations[:i])) # XXX prunning can be done once for all before... and pass the pruned networks here
+            target = squeeze_network(prune_network(subnet, saturations[:i])) # prunning can be done once for all before... and pass the pruned networks here
 
         W = target[-1].weight.data
         b = target[-1].bias.data

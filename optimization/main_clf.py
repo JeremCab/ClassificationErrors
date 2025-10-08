@@ -91,7 +91,7 @@ def main(start, end, bits, outputdir):
     data = create_dataset(train=False, batch_size=BATCH_SIZE)
 
     for i, (inputs, labels) in enumerate(data):
-        print(f"***************** Computation {i} *****************") # XXX
+        print(f"***************** Computation {i} *****************")
         maximas = []
         label = labels[0].item()
 
@@ -127,7 +127,7 @@ def main(start, end, bits, outputdir):
 
             # comparing_network_classifier computes net2(other) - net(label)
             # it shold be maximised to get wrong prediction
-            # XXX HAVEN'T WE ALREADY CREATED THE NETWORKS compnet ABOVE?
+            # HAVEN'T WE ALREADY CREATED THE NETWORKS compnet ABOVE?
             compnet_classifier = create_comparing_network_classifier(compnet, label, other)
             
             """
